@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { NoteService, Note } from '../services/api'
 import { NoteEditor } from '../components/NoteEditor'
-import { Plus, Search, FileText, Loader2, Trash2, RefreshCw } from 'lucide-react'
+import { Plus, Search, FileText, Loader2, Trash2, RefreshCw, Upload } from 'lucide-react'
 import { clsx } from 'clsx'
 
 export function NotesPage() {
@@ -12,6 +12,7 @@ export function NotesPage() {
     const [selectedNote, setSelectedNote] = useState<Note | null>(null)
     const [isLoading, setIsLoading] = useState(false)
     const [isSaving, setIsSaving] = useState(false)
+    const [systemInfo, setSystemInfo] = useState<string>('')
 
     const fetchNotes = async () => {
         setIsLoading(true)
@@ -61,6 +62,59 @@ export function NotesPage() {
             version: 0  // Placeholder, backend will generate
         }
         setSelectedNote(newNote)
+    }
+
+    // Opens the OS file picker (system dialog) and returns the selected text file's content.
+    // Restricts selection to text-like files for markdown compatibility.
+    const pickTextFileContent = (): Promise<{ name: string; content: string } | null> => {
+        return new Promise((resolve, reject) => {
+            const input = document.createElement('input')
+            input.type = 'file'
+            input.accept = 'text/plain,text/markdown,.txt,.md,.markdown'
+            input.multiple = false
+
+            input.onchange = async () => {
+                try {
+                    const file = input.files?.[0]
+                    if (!file) {
+                        resolve(null)
+                        return
+                    }
+                    // Read file content as UTF-8 string
+                    const content = await file.text()
+                    resolve({ name: file.name, content })
+                } catch (err) {
+                    reject(err)
+                }
+            }
+
+            // If the user cancels the dialog, `onchange` won't fire; resolve null on blur.
+            // (Best-effort; behavior can vary across platforms.)
+            setSystemInfo('Upload canceled.')
+            input.oncancel = () => resolve(null)
+
+            input.click()
+        })
+    }
+
+    const handleUploadNote = async () => {
+        try {
+            const picked = await pickTextFileContent()
+            if (!picked) return
+            // setSystemInfo(picked.content.slice(0, 300))
+            // create a new note with the uploaded content
+            const newNote: Note = {
+                id: 'new', // Placeholder, backend will generate real ID
+                title: '',
+                content: picked.content,
+                tags: [],
+                version: 0  // Placeholder, backend will generate
+            }
+            setSelectedNote(newNote)
+        } catch (error: any) {
+            const msg = error?.message ?? String(error)
+            setSystemInfo('Failed to upload file: ' + msg)
+        }
     }
 
     const handleSaveNote = async (data: { title: string; content: string; tags: string[] }) => {
@@ -131,6 +185,12 @@ export function NotesPage() {
                                 ) : (
                                     <RefreshCw size={18} />
                                 )}
+                            </button>
+                            <button
+                                onClick={handleUploadNote}
+                                className="p-1.5 bg-cyan-600 text-white rounded hover:bg-cyan-500 transition-colors"
+                            >
+                                <Upload size={18} />
                             </button>
                             <button
                                 onClick={handleCreateNote}
@@ -225,6 +285,11 @@ export function NotesPage() {
                     <div className="h-full flex flex-col items-center justify-center text-slate-500">
                         <FileText className="w-16 h-16 mb-4 opacity-20" />
                         <p>Select a note or create a new one</p>
+                        {systemInfo && (
+                            <div className="mt-4 w-[min(720px,90%)] p-3 rounded border border-cyan-700/40 bg-slate-900 text-xs text-cyan-300 whitespace-pre-wrap">
+                                {systemInfo}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
