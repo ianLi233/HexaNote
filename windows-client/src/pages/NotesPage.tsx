@@ -90,8 +90,10 @@ export function NotesPage() {
 
             // If the user cancels the dialog, `onchange` won't fire; resolve null on blur.
             // (Best-effort; behavior can vary across platforms.)
-            setSystemInfo('Upload canceled.')
-            input.oncancel = () => resolve(null)
+            input.oncancel = () => {
+                resolve(null)
+                setSystemInfo('Upload cancelled.')
+            }
 
             input.click()
         })
