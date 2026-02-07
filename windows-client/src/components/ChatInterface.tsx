@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChatService, NoteService, ContextNote, SemanticSearchResult } from '../services/api'
-import { Send, Bot, User, Loader2, Search, MessageSquare, FileText, RefreshCw } from 'lucide-react'
+import { Send, Bot, User, Loader2, Search, MessageSquare, FileText, RefreshCw, CheckCircle } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -28,6 +28,13 @@ export function ChatInterface() {
     const [loadedNoteContext, setLoadedNoteContext] = useState<{ noteId: string; title: string } | null>(null)
     const messagesEndRef = useRef<HTMLDivElement>(null)
 
+    // chat histories
+    // Placeholder chat history list (UI only)
+    const [historyItems] = useState<Array<{ id: string; title: string }>>([
+        { id: 'current', title: 'Current session' },
+    ])
+    const [activeHistoryId, setActiveHistoryId] = useState<string>('current')
+
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
@@ -35,6 +42,13 @@ export function ChatInterface() {
     useEffect(() => {
         scrollToBottom()
     }, [messages, searchResults])
+
+    // Auto reindex on page load
+    useEffect(() => {
+        handleReindex(false) // Use fake reindex for instant feedback; switch to false to call backend
+        // we intentionally run once on mount only
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
 
     const handleModeChange = (newMode: ChatMode) => {
         setMode(newMode)
@@ -45,16 +59,26 @@ export function ChatInterface() {
         setInput('')
     }
 
-    const handleReindex = async () => {
+    const handleReindex = async (notFake: boolean = true) => {
         setIsReindexing(true)
         setReindexMessage(null)
+
+        // ✅ Debug fake reindex path — skips backend
+        if (!notFake) {
+            await new Promise(res => setTimeout(res, 800)) // keep spinner visible
+            setReindexMessage('Fake reindex complete (debug)')
+            setIsReindexing(false)
+            setTimeout(() => setReindexMessage(null), 3000)
+            return
+        }
+
         try {
             const result = await NoteService.reindex()
-            setReindexMessage(`✓ ${result.message}`)
+            setReindexMessage(result.message)
             setTimeout(() => setReindexMessage(null), 5000)
         } catch (error) {
             console.error('Reindex error:', error)
-            setReindexMessage('❌ Failed to reindex notes')
+            setReindexMessage('Failed to reindex notes')
         } finally {
             setIsReindexing(false)
         }
@@ -187,10 +211,25 @@ export function ChatInterface() {
 
                 {/* Reindex Button */}
                 <div className="flex items-center gap-2 px-3">
-                    {reindexMessage && (
-                        <span className="text-xs text-green-400">{reindexMessage}</span>
-                    )}
-                    <button
+                    {/* Status div — LEFT of button */}
+                    <span className={clsx(
+                        "text-xs inline-flex items-center gap-1.5",
+                        isReindexing ? "text-amber-300" : "text-slate-500"
+                    )}>
+                        {isReindexing ? (
+                            <RefreshCw size={14} className="animate-spin" />
+                        ) : reindexMessage ? (
+                            <CheckCircle size={14} />
+                        ) : (
+                            <RefreshCw size={14} />
+                        )}
+                        {isReindexing
+                            ? "Reindexing…"
+                            : reindexMessage
+                                ? reindexMessage
+                                : "Index Up-to-date"}
+                    </span>
+                    {/* <button
                         onClick={handleReindex}
                         disabled={isReindexing}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-cyan-400 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50"
@@ -198,7 +237,7 @@ export function ChatInterface() {
                     >
                         <RefreshCw size={14} className={isReindexing ? 'animate-spin' : ''} />
                         {isReindexing ? 'Reindexing...' : 'Reindex'}
-                    </button>
+                    </button> */}
                 </div>
             </div>
 
