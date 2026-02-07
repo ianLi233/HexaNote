@@ -350,21 +350,30 @@ class WeaviateService:
         window_chunks: int = 2
     ) -> Optional[Dict]:
         """
-        Search within a specific note and return a context window around the best match.
+        Search within a specific note using vector search + re-ranking.
+
+        Pipeline:
+        1. Vector search scoped to the note
+        2. Re-rank chunks with Nexa cross-encoder
+        3. Filter by re-rank threshold (> 0.3), take top 2-3 chunks
+        4. Return selected chunks as context
 
         Args:
             note_id: The note to search within
             query: Search query
-            window_chunks: Number of chunks to include before and after the best match
+            window_chunks: (unused, kept for API compat)
 
         Returns:
             Dict with combined context text and metadata, or None if note not found
         """
+        RERANK_THRESHOLD = 0.3
+        MAX_CHUNKS = 3
+
         try:
             print(f"\n🔍 [SEARCH_WITHIN_NOTE] note_id={note_id}, query='{query}'")
             note_collection = self.client.collections.get(self.collection_name)
 
-            # Generate query embedding using Nexa
+            # Step 1: Generate query embedding
             try:
                 query_embeddings = self.nexa.embed_texts([query])
                 query_vector = query_embeddings[0]
@@ -372,10 +381,10 @@ class WeaviateService:
                 print(f"Error generating query embedding: {e}")
                 return None
 
-            # Search within this specific note
+            # Step 2: Vector search scoped to this note
             response = note_collection.query.near_vector(
                 near_vector=query_vector,
-                limit=50,  # Get all chunks for this note
+                limit=50,
                 filters=wvc.query.Filter.by_property("note_id").equal(note_id),
                 return_metadata=wvc.query.MetadataQuery(distance=True)
             )
@@ -384,50 +393,68 @@ class WeaviateService:
                 print(f"❌ [SEARCH_WITHIN_NOTE] No chunks found for note_id={note_id}")
                 return None
 
-            print(f"✓ [SEARCH_WITHIN_NOTE] Found {len(response.objects)} chunks")
+            chunks = response.objects
+            title = chunks[0].properties.get("title", "")
+            total_chunks = chunks[0].properties.get("total_chunks", 1)
+            print(f"✓ [SEARCH_WITHIN_NOTE] Found {len(chunks)} chunks in '{title}'")
 
-            # Find the best matching chunk
-            best_match = response.objects[0]
-            best_chunk_index = best_match.properties.get("chunk_index", 0)
-            total_chunks = best_match.properties.get("total_chunks", 1)
-            title = best_match.properties.get("title", "")
+            for i, obj in enumerate(chunks):
+                dist = obj.metadata.distance if hasattr(obj.metadata, 'distance') else None
+                idx = obj.properties.get("chunk_index", 0)
+                print(f"   [{i+1}] chunk={idx}, distance={dist:.4f}")
 
-            print(f"📍 [SEARCH_WITHIN_NOTE] Best match: chunk {best_chunk_index}/{total_chunks}, title='{title}'")
-            print(f"   Distance: {best_match.metadata.distance if hasattr(best_match.metadata, 'distance') else 'N/A'}")
-            print(f"   Content preview: {best_match.properties.get('content', '')[:100]}...")
+            # Step 3: Re-rank chunks with Nexa cross-encoder
+            try:
+                documents = [
+                    obj.properties.get("content", "")
+                    for obj in chunks
+                ]
+                rerank_scores = self.nexa.rerank(query, documents)
+                print(f"✓ [SEARCH_WITHIN_NOTE] Re-rank scores: {[f'{s:.4f}' for s in rerank_scores]}")
 
-            # Calculate window range
-            start_index = max(0, best_chunk_index - window_chunks)
-            end_index = min(total_chunks - 1, best_chunk_index + window_chunks)
-            print(f"📊 [SEARCH_WITHIN_NOTE] Context window: chunks {start_index}-{end_index}")
+                scored_chunks = list(zip(chunks, rerank_scores))
+                scored_chunks.sort(key=lambda x: x[1], reverse=True)
 
-            # Fetch all chunks in the window range
-            all_chunks = note_collection.query.fetch_objects(
-                filters=wvc.query.Filter.by_property("note_id").equal(note_id),
-                limit=total_chunks
-            )
+                # Log sorted results
+                print(f"📊 [SEARCH_WITHIN_NOTE] Re-ranked (sorted):")
+                for i, (obj, score) in enumerate(scored_chunks):
+                    idx = obj.properties.get("chunk_index", 0)
+                    preview = obj.properties.get("content", "")[:80]
+                    print(f"   [{i+1}] rerank={score:.4f}, chunk={idx}, preview='{preview}...'")
 
-            # Sort by chunk_index and extract the window
-            sorted_chunks = sorted(
-                all_chunks.objects,
-                key=lambda x: x.properties.get("chunk_index", 0)
-            )
+            except Exception as e:
+                print(f"⚠️  [SEARCH_WITHIN_NOTE] Re-ranking failed: {e}, falling back to distance order")
+                scored_chunks = [(obj, 1.0) for obj in chunks]
 
-            window_chunks_list = [
-                chunk for chunk in sorted_chunks
-                if start_index <= chunk.properties.get("chunk_index", 0) <= end_index
-            ]
+            # Step 4: Filter by re-rank threshold, take top MAX_CHUNKS
+            high_scoring = [(obj, score) for obj, score in scored_chunks if score > RERANK_THRESHOLD]
+            print(f"📏 [SEARCH_WITHIN_NOTE] {len(high_scoring)} chunks passed rerank threshold ({RERANK_THRESHOLD})")
 
-            # Combine chunks into context
+            if not high_scoring:
+                # Fallback: take the top 2 chunks by rerank score
+                print(f"⚠️  [SEARCH_WITHIN_NOTE] No chunks passed threshold, using top 2 chunks")
+                final_chunks = [obj for obj, _ in scored_chunks[:2]]
+            else:
+                final_chunks = [obj for obj, _ in high_scoring[:MAX_CHUNKS]]
+
+            # Build context from selected chunks (sorted by chunk_index for coherence)
+            final_chunks.sort(key=lambda x: x.properties.get("chunk_index", 0))
+
+            selected_indices = [obj.properties.get("chunk_index", 0) for obj in final_chunks]
+            print(f"🎯 [SEARCH_WITHIN_NOTE] Selected chunks: {selected_indices}")
+
             context_text = "\n\n".join([
-                chunk.properties.get("content", "")
-                for chunk in window_chunks_list
+                obj.properties.get("content", "")
+                for obj in final_chunks
             ])
+
+            best_chunk_index = selected_indices[0] if selected_indices else 0
+            chunk_range = f"{selected_indices[0]}-{selected_indices[-1]}" if selected_indices else "0-0"
 
             return {
                 "context": context_text,
                 "title": title,
-                "chunk_range": f"{start_index}-{end_index}",
+                "chunk_range": chunk_range,
                 "total_chunks": total_chunks,
                 "best_chunk_index": best_chunk_index
             }
@@ -621,11 +648,11 @@ class WeaviateService:
 
             print(f"✓ [GENERATIVE_SEARCH] {len(high_scoring_chunks)} chunks passed rerank threshold")
 
-            # If no chunks pass threshold, use only the first chunk (best by distance)
+            # If no chunks pass threshold, use top 2 chunks (best by rerank score)
             if not high_scoring_chunks:
-                print(f"⚠️  [GENERATIVE_SEARCH] No chunks passed rerank threshold, using first chunk only")
+                print(f"⚠️  [GENERATIVE_SEARCH] No chunks passed rerank threshold, using top 2 chunks")
                 reranked_chunks.sort(key=lambda x: x[2], reverse=True)  # Sort by rerank score
-                final_chunks = reranked_chunks[:1]  # Take only the first chunk
+                final_chunks = reranked_chunks[:2]
             else:
                 # Sort by rerank score and take up to MAX_CHUNKS_IN_PROMPT
                 high_scoring_chunks.sort(key=lambda x: x[2], reverse=True)
