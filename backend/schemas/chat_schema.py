@@ -1,9 +1,10 @@
 """
 Pydantic schemas for Chat/RAG API requests and responses.
 """
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import List, Optional
 from datetime import datetime
+import json
 
 
 class ChatRequest(BaseModel):
@@ -13,6 +14,7 @@ class ChatRequest(BaseModel):
     note_filter: Optional[List[str]] = Field(None, description="Optional tag filter for note search")
     limit: int = Field(default=5, ge=1, le=20, description="Maximum number of notes to use as context")
     additional_context: Optional[str] = Field(None, description="Additional context to include without vectorization")
+    note_id_filter: Optional[str] = Field(None, description="Optional note ID to limit search scope to a specific note")
 
 
 class ContextNote(BaseModel):
@@ -39,6 +41,13 @@ class ChatMessageResponse(BaseModel):
     content: str
     context_note_ids: List[str] = Field(default_factory=list, description="Note IDs used for this message")
     created_at: datetime
+
+    @field_validator("context_note_ids", mode="before")
+    @classmethod
+    def parse_context_note_ids(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
 
     model_config = ConfigDict(from_attributes=True)
 

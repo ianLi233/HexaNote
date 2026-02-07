@@ -7,16 +7,6 @@ nexa serve --host 0.0.0.0:8883 --keepalive 60000
  ```
 
  Make sure the python version is py3.11-3.13 and is of ARM64 distribution for optimal performance
-```
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install weaviate-client>=4.16.0
-
-cd backend
-pip3 install -r requirements.txt
-```
 
 
 
@@ -24,7 +14,7 @@ pip3 install -r requirements.txt
 
 ```bash
 # in WSL
-export WINDOWS_HOST=$(ip route | grep default | awk '{print $3}')# get the windows host IP
+export WINDOWS_HOST=$(ip route | grep default | awk '{print $3}')         # get the windows host IP
 
 echo $WINDOWS_HOST
 #172.23.224.1, modify in backend code if needed.

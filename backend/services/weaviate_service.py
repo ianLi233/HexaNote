@@ -603,9 +603,14 @@ class WeaviateService:
                 # Fallback to distance-based scoring
                 reranked_chunks = [(obj, distance, 1.0 - distance) for obj, distance in chunks_to_rerank]
 
-            # Step 4: Filter by rerank score threshold and limit to max 2 chunks
-            RERANK_THRESHOLD = 0.5  # Only use chunks with rerank score > 0.5
-            MAX_CHUNKS_IN_PROMPT = 2  # Maximum chunks to send to LLM
+            # Step 4: Filter by rerank score threshold and limit chunks
+            # Looser thresholds when scoped to a specific note (advanced search)
+            if note_id_filter:
+                RERANK_THRESHOLD = 0.05
+                MAX_CHUNKS_IN_PROMPT = 4
+            else:
+                RERANK_THRESHOLD = 0.5
+                MAX_CHUNKS_IN_PROMPT = 2
             print(f"📏 [GENERATIVE_SEARCH] Rerank threshold: {RERANK_THRESHOLD}, max chunks: {MAX_CHUNKS_IN_PROMPT}")
 
             high_scoring_chunks = [
