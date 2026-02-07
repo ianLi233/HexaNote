@@ -58,7 +58,8 @@ class ChatService:
             query=request.message,
             limit=request.limit,
             tag_filter=request.note_filter,
-            additional_context=combined_context if combined_context else None
+            additional_context=combined_context if combined_context else None,
+            note_id_filter=request.note_id_filter
         )
 
         # Format context notes
