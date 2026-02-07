@@ -14,7 +14,7 @@ A **privacy-first, AI-powered note-taking app** with semantic search and RAG (Re
 
 ## Quick Start
 
-### Prerequisites
+### ***DEPRECATED FROM HERE OUT, THERE ARE SEPARATE INSTRUCTIONS FOR BACKEND AND FRONTEND ON THE INDIVIDUAL FOLDERS***
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
