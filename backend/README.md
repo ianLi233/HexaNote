@@ -107,10 +107,10 @@ Result: Faster, more focused follow-up answers using detailed context from a sin
 
 | Stage | Purpose | Threshold | Typical Time |
 |------|---------|-----------|--------------|
-| Semantic Search | Find relevant chunks by meaning | Distance ≤ 0.3 | ~4–5 s |
+| Semantic Search | Find relevant chunks by meaning | Distance ≤ 0.3 | ~<0.5 s |
 | RAG Filtering | Keep only high-confidence chunks | Re-rank ≥ 0.5 | included above |
 | RAG Generation | Produce grounded answer | — | ~12–20 s |
-| Deep Search | Focused search inside one note | — | ~1 s |
+| Deep Search | Focused search inside one note | — | ~12–20 s |
 
 ---
 
