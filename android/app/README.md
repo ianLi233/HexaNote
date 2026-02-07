@@ -26,6 +26,20 @@ Voice-powered intelligence for your personal notes. Powered by Qualcomm Whisper 
 - **HexaNote Backend**: A running instance of the HexaNote RAG server.
 - **Network**: Connectivity to the backend (via Local IP or Tailscale).
 
+## 📦 APK & Installation
+
+### Build it yourself
+1. Open the project in **Android Studio Ladybug+**.
+2. Go to **Build** > **Build Bundle(s) / APK(s)** > **Build APK(s)**.
+3. Once the build completes, a notification will appear. Click **locate** to find the APK, or find it manually at:
+   `app/build/outputs/apk/debug/app-debug.apk`
+
+### Quick Install
+If you have a device connected via ADB, you can build and install in one step:
+```bash
+./gradlew installDebug
+```
+
 ## ⚙️ Configuration
 
 ### 1. Backend URL
@@ -57,7 +71,7 @@ The app integrates with several key endpoints:
 
 ## 🚀 Getting Started
 
-1. Open the project in **Android Studio Ladybug+**.
+1. Open the project in **Android Studio**.
 2. Sync Gradle dependencies.
 3. Build and run on a compatible Android device.
 4. Grant **Microphone** permissions when prompted.
