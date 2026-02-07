@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChatService, NoteService, ContextNote, SemanticSearchResult, Message } from '../services/api'
+import { ChatService, NoteService, SemanticSearchResult, Message } from '../services/api'
 import { Send, Bot, User, Loader2, Search, MessageSquare, FileText, RefreshCw, CheckCircle, Plus } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'

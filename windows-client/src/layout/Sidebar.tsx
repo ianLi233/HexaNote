@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { Sticker, MessageSquare, Settings, Hexagon, RefreshCw, Loader2 } from 'lucide-react'
+import { Sticker, MessageSquare, RefreshCw, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useState } from 'react'
 

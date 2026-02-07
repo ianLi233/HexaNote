@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { NoteService, Note } from '../services/api'
 import { NoteEditor } from '../components/NoteEditor'
-import { Plus, Search, FileText, Loader2, Trash2, RefreshCw, Upload } from 'lucide-react'
+import { Plus, Search, FileText, Loader2, Trash2, Upload } from 'lucide-react'
 import { clsx } from 'clsx'
 
 export function NotesPage() {
@@ -11,7 +11,6 @@ export function NotesPage() {
     const [searchQuery, setSearchQuery] = useState('')
     const [selectedNote, setSelectedNote] = useState<Note | null>(null)
     const [isLoading, setIsLoading] = useState(false)
-    const [isSaving, setIsSaving] = useState(false)
     const [systemInfo, setSystemInfo] = useState<string>('')
 
     const fetchNotes = async () => {
@@ -146,7 +145,6 @@ export function NotesPage() {
 
     const handleSaveNote = async (data: { title: string; content: string; tags: string[] }) => {
         if (!selectedNote) return
-        setIsSaving(true)
         try {
             let savedNote: Note
             if (selectedNote.id === 'new') {
@@ -172,8 +170,6 @@ export function NotesPage() {
             fetchNotes() // Refresh list
         } catch (error) {
             console.error('Failed to save note', error)
-        } finally {
-            setIsSaving(false)
         }
     }
 
