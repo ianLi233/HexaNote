@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChatService, NoteService, ContextNote, SemanticSearchResult } from '../services/api'
-import { Send, Bot, User, Loader2, Search, MessageSquare, FileText, RefreshCw, CheckCircle } from 'lucide-react'
+import { Send, Bot, User, Loader2, Search, MessageSquare, FileText, RefreshCw, CheckCircle, Plus } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -39,25 +39,28 @@ export function ChatInterface() {
 
     // chat histories
     const [historyItems, setHistoryItems] = useState<ChatSession[]>([])
-    const nextSessionIdRef = useRef<number>(1)
+    const nextSessionIdRef = useRef<number>(0)
     const [activeChatId, setActiveChatId] = useState<number>(0)
 
-    const createChatSession = async (title?: string) => {
+    // Tiny debug overlay (mini console)
+    const [debugLines, setDebugLines] = useState<string[]>([])
+    const pushDebug = (msg: string) => {
+        const ts = new Date().toLocaleTimeString()
+        setDebugLines(prev => {
+            const next = [...prev, `[${ts}] ${msg}`]
+            return next.length > 80 ? next.slice(next.length - 80) : next
+        })
+    }
+    const clearDebug = () => setDebugLines([])
+
+    const createChatSessionLocal = (title?: string) => {
         const id = nextSessionIdRef.current++
         const now = Date.now()
 
-        /// request a server-assigned session id for this chat
-        let createdSessionId = ''
-        try {
-            createdSessionId = await ChatService.createSession()
-        } catch {
-            // If session creation fails, still create local chat
-            createdSessionId = `local-${id}`
-        }
-
         const newSession: ChatSession = {
             id,
-            sessionId: createdSessionId,
+            // placeholder until we fetch server session id
+            sessionId: `pending-${id}`,
             title: title ?? `New Chat ${id + 1}`,
             createdAt: now,
             updatedAt: now,
@@ -67,8 +70,46 @@ export function ChatInterface() {
 
         setHistoryItems(prev => [newSession, ...prev])
         setActiveChatId(id)
+        pushDebug(`Created new chat session: ${newSession.title} (sessionId: ${newSession.sessionId})`)
 
         return newSession
+    }
+
+    const setChatSessionId = (chatId: number, sessionId: string) => {
+        setHistoryItems(prev =>
+            prev.map(s => (s.id === chatId ? { ...s, sessionId, updatedAt: Date.now() } : s))
+        )
+    }
+
+    const ensureServerSessionId = async (chatId: number) => {
+        const existing = historyItems.find(s => s.id === chatId)
+        if (existing && existing.sessionId && !existing.sessionId.startsWith('pending-')) {
+            return existing.sessionId
+        }
+
+        pushDebug('Requesting server session id…')
+        let createdSessionId = ''
+        try {
+            createdSessionId = await ChatService.createSession()
+        } catch {
+            createdSessionId = `local-${chatId}`
+        }
+
+        setChatSessionId(chatId, createdSessionId)
+        pushDebug(`Session id ready for chat ${chatId}: ${createdSessionId}`)
+        return createdSessionId
+    }
+
+    const handleNewChat = () => {
+        // Reset to sentinel “no active chat yet”; first send will create a new chat session
+        setActiveChatId(0)
+
+        // Reset current view state (messages are currently global, not per-session)
+        setMessages([])
+        setSearchResults([])
+        setLoadedNoteContext(null)
+        setInput('')
+        pushDebug('Switched to new chat')
     }
 
     const scrollToBottom = () => {
@@ -121,22 +162,29 @@ export function ChatInterface() {
 
     const handleSend = async () => {
         if (!input.trim() || isLoading) return
+        const userText = input
         setIsLoading(true)
 
-        // retrieve active chat session or create a new one if none exists
-        let ensuredSessionId: string | null = null
+        // Ensure there is a chat session for this send (create locally immediately)
+        let chatId = activeChatId
         if (activeChatId === 0) {
-            const newSession = await createChatSession(input.trim())
-            ensuredSessionId = newSession.sessionId
-        } else {
-            const existingSession = historyItems.find((s) => s.id === activeChatId)
-            ensuredSessionId = existingSession?.sessionId ?? null
+            const newSession = createChatSessionLocal()
+            chatId = newSession.id
         }
+
+        // Show the user message immediately
+        if (mode === 'rag') {
+            setMessages(prev => [...prev, { role: 'user', content: userText }])
+        }
+        setInput('')
+
+        // Obtain a server session id (await, but UI is already updated)
+        const ensuredSessionId = await ensureServerSessionId(chatId)
 
         if (mode === 'rag') {
             // RAG mode: use LLM with context
-            const userMessage: Message = { role: 'user', content: input }
-            setMessages(prev => [...prev, userMessage])
+            // const userMessage: Message = { role: 'user', content: input }
+            // setMessages(prev => [...prev, userMessage])
 
             // Prepare additional context by searching within loaded note
             let additionalContext: string | undefined = undefined
@@ -146,7 +194,7 @@ export function ChatInterface() {
                     console.log('🔍 [ChatInterface] Calling searchWithinNote...')
                     const searchResult = await NoteService.searchWithinNote(
                         loadedNoteContext.noteId,
-                        input,
+                        userText,
                         2  // 2 chunks before and after
                     )
                     console.log('✓ [ChatInterface] Search result:', searchResult)
@@ -159,7 +207,7 @@ export function ChatInterface() {
             }
 
             try {
-                const response = await ChatService.query(input, ensuredSessionId, additionalContext)
+                const response = await ChatService.query(userText, ensuredSessionId, additionalContext)
                 const botMessage: Message = {
                     role: 'assistant',
                     content: response.message,
@@ -223,8 +271,18 @@ export function ChatInterface() {
             {/* History Sidebar (placeholder) */}
             <div className="w-72 flex-shrink-0 border-r border-slate-800 bg-slate-900/60 flex flex-col min-h-0">
                 <div className="p-3 border-b border-slate-800">
-                    <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                        Chat History (coming soon...)
+                    <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                            Chat History
+                        </div>
+                        <button
+                            onClick={handleNewChat}
+                            className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-slate-800 text-slate-300 hover:text-slate-100 hover:bg-slate-700 transition-colors"
+                            title="New Chat"
+                            aria-label="New Chat"
+                        >
+                            <Plus size={16} />
+                        </button>
                     </div>
                 </div>
 
@@ -484,6 +542,30 @@ export function ChatInterface() {
                     </div>
                 </div>
             </div>
+            {/* Tiny debug overlay (shows recent debug lines) */}
+            {debugLines.length > 0 && (
+                <div className="fixed bottom-3 right-3 z-50 w-[340px] max-w-[90vw]">
+                    <div className="bg-slate-950/90 border border-slate-700 rounded-lg shadow-lg overflow-hidden">
+                        <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800">
+                            <div className="text-[11px] text-slate-300">Debug</div>
+                            <button
+                                onClick={clearDebug}
+                                className="text-[11px] text-slate-400 hover:text-slate-200 px-2 py-0.5 rounded hover:bg-slate-800"
+                                title="Clear"
+                            >
+                                Clear
+                            </button>
+                        </div>
+                        <div className="max-h-[160px] overflow-y-auto px-2 py-1 space-y-1">
+                            {debugLines.slice(-20).map((line, i) => (
+                                <div key={i} className="text-[10px] leading-snug text-slate-300 whitespace-pre-wrap break-words">
+                                    {line}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }
