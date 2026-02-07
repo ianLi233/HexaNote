@@ -54,7 +54,7 @@ export function ChatInterface({
 
 
     // Tiny debug overlay (mini console)
-    const [debugLines, setDebugLines] = useState<string[]>([])
+    const [ ,setDebugLines] = useState<string[]>([])
     const pushDebug = (msg: string) => {
         const ts = new Date().toLocaleTimeString()
         setDebugLines(prev => {
@@ -62,7 +62,7 @@ export function ChatInterface({
             return next.length > 80 ? next.slice(next.length - 80) : next
         })
     }
-    const clearDebug = () => setDebugLines([])
+    // const clearDebug = () => setDebugLines([])
 
     const createChatSessionLocal = (title?: string) => {
         const id = nextSessionIdRef.current++
