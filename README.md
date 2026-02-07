@@ -1,257 +1,220 @@
-# HexaNote 📝
+# HexaNote
 
-A **privacy-first, AI-powered note-taking app** with semantic search and RAG (Retrieval-Augmented Generation). Everything runs **100% locally** on your machine.
+A privacy-first, AI-powered note-taking application with semantic search and RAG (Retrieval-Augmented Generation). Everything runs 100% locally on your machine — no data ever leaves your device.
 
 ## Features
 
-- ✅ **Semantic Search** - Find notes by meaning, not just keywords
-- ✅ **RAG Chat** - Ask questions about your notes, get AI-powered answers
-- ✅ **Multi-device Sync** - Sync notes across devices via WebSocket
-- ✅ **Local AI** - Powered by Ollama (LLM) and Weaviate (Vector DB)
-- ✅ **Privacy First** - All data stays on your machine
+- **Semantic Search** — Find notes by meaning, not just keywords
+- **RAG Chat** — Ask questions about your notes and get AI-powered answers with cited sources
+- **Voice Input** — On-device speech-to-text via WhisperKit with NPU acceleration (Android)
+- **Multi-device Sync** — Real-time sync across devices via WebSocket
+- **Local AI** — Powered by Nexa (LLM + Embeddings) and Weaviate (Vector DB)
+- **Privacy First** — All data and AI inference stays on your machine
 
----
+## Architecture
+
+```
+┌─────────────────┐
+│  Windows Host   │
+│  Nexa Server    │  LLM (Llama 3.2) + Embeddings (Jina v2)+ Reranker()
+│  port 8883      │
+└────────┬────────┘
+         │
+┌────────▼──────────────────────────────┐
+│  Docker (WSL2)                        │
+│                                       │
+│  ┌─────────────┐  ┌───────────────┐  │
+│  │  Backend    │  │  Weaviate     │  │
+│  │  FastAPI    │  │  Vector DB    │  │
+│  │  port 8001  │  │  port 8080    │  │
+│  └─────────────┘  └───────────────┘  │
+└───────────────────────────────────────┘
+         │
+    ┌────┴─────┐
+    │          │
+ Windows    Android
+ Electron   Kotlin
+ Client     Client
+```
 
 ## Quick Start
 
-### ***DEPRECATED FROM HERE OUT, THERE ARE SEPARATE INSTRUCTIONS FOR BACKEND AND FRONTEND ON THE INDIVIDUAL FOLDERS***
+### Prerequisites
 
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| **Docker Desktop** | Latest | With WSL2 backend enabled |
-| **Node.js** | 18+ | For Windows client |
-| **WSL2** | Ubuntu recommended | For running Docker |
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2
+- [Nexa CLI](https://github.com/NexaAI/nexa-sdk) installed on the Windows host
+- Node.js 18+ (for the Windows client)
+- Android Studio (for the Android client)
 
----
+### 1. Start the Nexa AI server
 
-## 1. Backend Setup (WSL2/Docker)
-### Step 0: Configure WSL2
+Please reference the [Backend Readme file](./README.md) for booting up the backend
 
--  Use Mirrored Network Mode for outside availablity 
-
-
-### Step 1: Clone and Navigate
+### 2. Start the backend + Weaviate
 
 ```bash
-# In WSL2 terminal
-cd /mnt/c/Users/YOUR_USERNAME/HexaNote
-
-
-# install dep
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install weaviate-client>=4.16.0
-
-cd backend
-pip3 install -r requirements.txt
-
-```
-
-### Step 2: Start Docker Containers, check for the Nvidia GPU config part
-
-```bash
-cd ..
-
-docker compose up -d --build backend
-
-docker compose up -d
+docker compose up -d --build
 ```
 
 This starts:
-- **Ollama** (port 11434) - Local LLM inference
-- **Weaviate** (port 8080) - Vector database
-- **Backend API** (port 8001) - FastAPI server
+- **Weaviate** vector database on port `8080`
+- **HexaNote backend** (FastAPI) on port `8001`
 
-### Step 3: Pull AI Models
+### 3. Launch a client
 
-```bash
-# Pull embedding model (for semantic search)
-docker exec -it ollama ollama pull mxbai-embed-large
-
-# Pull LLM model (for RAG chat)
-docker exec -it ollama ollama pull llama3.2:1b
-```
-
-### Step 4: Initialize Database Schema
-
-```bash
-python3 5-migrate-to-notes_run-after-docker-compose-up-d.py 
-```
-
-### Step 5: Verify Health
-
-```bash
-curl http://localhost:8001/api/v1/health
-```
-
-Expected response:
-```json
-{"status": "healthy", "version": "1.0.0"}
-```
+See the [Windows Client](#windows-client) or [Android Client](#android-client) sections below.
 
 ---
 
-## 2. Windows Client Setup
+## Backend
 
-### Step 1: Navigate to Client Folder
+**Tech stack:** Python, FastAPI, SQLAlchemy (SQLite), Weaviate, Nexa
 
-```powershell
-# In PowerShell or Command Prompt
-cd C:\Users\YOUR_USERNAME\HexaNote\windows-client
-```
+The backend is a REST API that handles note storage, semantic search, RAG chat, and multi-device synchronization.
 
-### Step 2: Install Dependencies
-
-```bash
-npm install
-```
-
-### Step 3: Run Development Server
-
-```bash
-npm run dev
-```
-
-### Step 4: Open in Browser
-
-Open [http://localhost:5173](http://localhost:5173) in your browser.
-
----
-
-## API Endpoints
+### Key Endpoints
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/notes` | GET | List all notes |
-| `/api/v1/notes` | POST | Create a note |
-| `/api/v1/notes/{id}` | PUT | Update a note |
-| `/api/v1/notes/{id}` | DELETE | Delete a note |
-| `/api/v1/notes/search/semantic` | GET | Semantic search |
-| `/api/v1/notes/reindex` | POST | Reindex notes in Weaviate |
-| `/api/v1/chat/query` | POST | RAG chat query |
-| `/api/v1/sync` | POST | Batch sync notes |
-| `/api/v1/sync/ws` | WS | Real-time sync |
+|---|---|---|
+| `/api/v1/token` | POST | Authenticate (default password: `hexanote`) |
+| `/api/v1/health` | GET | Health check (DB + Weaviate status) |
+| `/api/v1/notes` | GET/POST | List or create notes |
+| `/api/v1/notes/{id}` | GET/PUT/DELETE | Read, update, or soft-delete a note |
+| `/api/v1/notes/search/semantic` | GET | Semantic search across all notes |
+| `/api/v1/notes/{id}/search` | GET | Deep search within a single note |
+| `/api/v1/notes/reindex` | POST | Reindex all notes in Weaviate |
+| `/api/v1/chat/query` | POST | RAG-powered chat query |
+| `/api/v1/chat/history` | GET | Get chat conversation history |
+| `/api/v1/chat/sessions` | POST | Create a new chat session |
+| `/api/v1/sync/ws` | WebSocket | Real-time multi-device sync |
 
----
+### RAG Pipeline
 
-## Troubleshooting
+1. **Semantic search** retrieves relevant note chunks from Weaviate
+2. **Re-ranking** filters chunks by confidence (threshold: 0.5)
+3. **LLM generation** produces a grounded answer from the top chunks
+4. **Deep search** allows follow-up queries within a single note
 
-### Semantic Search Returns Poor Results
-
-1. Click **Reindex** button in the Chat tab
-2. Wait for "Reindexed successfully" message
-3. Try searching again
-
-### RAG Chat Times Out
-
-- CPU inference is slow (~45-60 seconds per query)
-- The timeout is set to 5 minutes, just wait
-- For faster results, use a smaller model:
-  ```bash
-  docker exec -it ollama ollama pull qwen2:0.5b
-  ```
-
-
-
-### "Model not found" Error
-
-Pull the required models:
-```bash
-docker exec -it ollama ollama pull mxbai-embed-large
-docker exec -it ollama ollama pull llama3.2:1b
-```
-
-### Container Not Starting
-
-```bash
-# Check logs
-docker logs hexanote-backend --tail 50
-docker logs weaviate --tail 50
-docker logs ollama --tail 50
-
-# Restart all containers
-docker compose restart
-```
-
----
-
-## Project Structure
-
-```
-HexaNote/
-├── backend/              # FastAPI backend
-│   ├── routers/          # API endpoints
-│   ├── services/         # Business logic
-│   ├── models/           # SQLAlchemy models
-│   ├── schemas/          # Pydantic schemas
-│   └── Dockerfile
-├── windows-client/       # React frontend
-│   ├── src/
-│   │   ├── components/   # React components
-│   │   ├── pages/        # Page components
-│   │   └── services/     # API client
-│   └── package.json
-├── docker-compose.yml    # Docker orchestration
-└── README.md             # This file
-```
-
----
-
-## Development
-
-### Run Backend Locally (without Docker)
+### Running locally (without Docker)
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8001
+python main.py
+# Server starts on http://0.0.0.0:8000
 ```
 
-### Build Windows Client for Production
+See [API_REFERENCE.md](API_REFERENCE.md) for full API documentation.
+
+---
+
+## Windows Client
+
+**Tech stack:** Electron, React 18, TypeScript, Vite, Tailwind CSS
+
+A desktop application for Windows that provides a full note editor and RAG chat interface.
+
+### Features
+
+- **Note Editor** — Markdown editing with live preview, LaTeX/math rendering (KaTeX), and auto-save
+- **Semantic Search** — Search notes by meaning from the sidebar
+- **RAG Chat** — Conversational AI interface with session management and source citations
+- **File Upload** — Import `.txt` and `.md` files as notes
+- **Tag Management** — Organize notes with tags
+
+### Build & Run
 
 ```bash
 cd windows-client
-npm run build
+npm install
+
+# Development
+npm run dev
+
+# Build for Windows (ARM64)
+npm run build:win
 ```
 
 ---
 
+## Android Client
 
+**Tech stack:** Kotlin, Jetpack Compose, Retrofit, WhisperKit (Qualcomm NPU)
 
+A voice-first mobile client optimized for Snapdragon 8 Elite devices (e.g., Galaxy S25).
 
+### Features
 
-### 5. Test the API
+- **Voice Input** — Tap to record, on-device transcription via WhisperKit with NPU acceleration
+- **RAG Chat** — Ask questions about your notes with AI-generated answers
+- **Semantic Search** — Meaning-based search across all notes
+- **Text-to-Speech** — Listen to AI responses and note content hands-free
+- **Hardware Optimized** — NPU-accelerated inference for low-latency transcription
+
+### Build & Install
 
 ```bash
-# Health check
-curl http://localhost:8001/api/v1/health
+cd android
 
+# Build and install on connected device
+./gradlew installDebug
 
-# Check all the notes
-curl http://localhost:8001/api/v1/notes | jq
-
-# Create a note
-curl -X POST http://localhost:8001/api/v1/notes \
-  -H "Content-Type: application/json" \
-  -d '{"title":"My First Note","content":"# Hello\n\nMath: $E=mc^2$","tags":["test"]}'
-
-# Chat with your notes
-curl -X POST http://localhost:8001/api/v1/chat/query \
-  -H "Content-Type: application/json" \
-  -d '{"message":"What notes do I have?","limit":5}'
-
-
-# semantic search API
-curl "http://localhost:8001/api/v1/notes/search/semantic?q=python&limit=5"
+# Or build APK only
+./gradlew assembleDebug
+# Output: app/build/outputs/apk/debug/app-debug.apk
 ```
 
+### Configuration
 
+Update the backend server URL in `HexaNoteRetrofitClient.kt`:
 
+```kotlin
+private const val BASE_URL = "http://YOUR_SERVER_IP:8001/api/v1/"
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATABASE_URL` | `sqlite:///./data/hexanote.db` | SQLite database path |
+| `WEAVIATE_URL` | `http://weaviate:8080` | Weaviate vector DB URL |
+| `NEXA_URL` | `http://172.23.224.1:8883` | Nexa AI server URL (Windows host) |
+| `SIMPLE_PASSWORD` | `hexanote` | Authentication password |
+| `SECRET_KEY` | (see config.py) | JWT signing secret (change in production) |
+
+### Docker Compose Services
+
+| Service | Port | Description |
+|---|---|---|
+| `backend` | 8001 | FastAPI application server |
+| `weaviate` | 8080 | Vector database for semantic search |
+
+### AI Models
+
+| Model | Purpose | Details |
+|---|---|---|
+| ` NexaAI/jina-v2-rerank-npu` |for Re-ranking| Rerankeing |
+| `djuna/jina-embeddings-v2-base-en-Q5_K_M-GGUF` | Text embeddings | 768-dimensional vectors |
+| `NexaAI/Llama3.2-3B-NPU-Turbo` | LLM generation | NPU-accelerated, ~25 tokens/sec |
+
+---
+
+## Tech Stack Summary
+
+| Component | Technologies |
+|---|---|
+| **Backend** | Python, FastAPI, SQLAlchemy, SQLite, Weaviate, Nexa |
+| **Windows Client** | Electron, React, TypeScript, Vite, Tailwind CSS |
+| **Android Client** | Kotlin, Jetpack Compose, Retrofit, WhisperKit |
+| **AI / ML** | Llama 3.2 (LLM), Jina Embeddings v2, WhisperKit (ASR) |
+| **Infrastructure** | Docker Compose, WSL2 |
+
+---
 
 ## License
 
-MIT License - Use freely for personal or commercial projects.
+This project is for educational and personal use.
