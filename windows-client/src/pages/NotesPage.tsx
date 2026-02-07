@@ -30,6 +30,31 @@ export function NotesPage() {
         fetchNotes()
     }, [])
 
+    // listen to refresh trigger from sidebar
+    useEffect(() => {
+        const onRefresh = async () => {
+            setIsLoading(true)
+            try {
+                await fetchNotes()
+                window.dispatchEvent(new CustomEvent('notes:refresh:done', { detail: { ok: true } }))
+            } catch (err: any) {
+                setIsLoading(false)
+                window.dispatchEvent(new CustomEvent('notes:refresh:done', { detail: { ok: false } }))
+            } finally {
+                // Clear the text after a short delay so it behaves like an indicator
+                window.dispatchEvent(new CustomEvent('notes:refresh:done', { detail: { ok: true } }))
+                window.setTimeout(() => {
+                    setIsLoading(false)
+                }, 2000)
+            }
+        }
+
+        window.addEventListener('notes:refresh', onRefresh)
+        return () => {
+            window.removeEventListener('notes:refresh', onRefresh)
+        }
+    }, [fetchNotes])
+
     // Load specific note from URL param (e.g., /note/abc-123)
     useEffect(() => {
         if (noteId && notes.length > 0) {
@@ -175,19 +200,19 @@ export function NotesPage() {
             <div className="w-80 border-r border-slate-800 bg-slate-900 flex flex-col">
                 <div className="p-4 border-b border-slate-800 space-y-3">
                     <div className="flex items-center justify-between">
-                        <h2 className="font-bold text-lg">My Notes</h2>
+                        {/* <h2 className="font-bold text-lg">My Notes</h2> */}
                         <div className="flex items-center gap-2">
-                            <button
-                                onClick={fetchNotes}
-                                className="p-1.5 bg-slate-800 text-cyan-400 rounded hover:bg-slate-800/90 transition-colors"
-                                title="Refresh notes"
-                            >
-                                {isLoading ? (
-                                    <Loader2 className="animate-spin text-cyan-500" />
-                                ) : (
-                                    <RefreshCw size={18} />
-                                )}
-                            </button>
+                            <form onSubmit={handleSearch} className="relative">
+                                <Search className="absolute left-3 top-2.5 text-cyan-500 w-4 h-4" />
+                                <input
+                                    type="text"
+                                    placeholder="Filter notes..."
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    className="w-full bg-slate-800 text-sm pl-9 pr-3 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500/50 placeholder:text-slate-600"
+                                />
+                            </form>
+
                             <button
                                 onClick={handleUploadNote}
                                 className="p-1.5 bg-cyan-600 text-white rounded hover:bg-cyan-500 transition-colors"
@@ -202,16 +227,6 @@ export function NotesPage() {
                             </button>
                         </div>
                     </div>
-                    <form onSubmit={handleSearch} className="relative">
-                        <Search className="absolute left-3 top-2.5 text-cyan-500 w-4 h-4" />
-                        <input
-                            type="text"
-                            placeholder="Filter notes..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full bg-slate-800 text-sm pl-9 pr-3 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500/50 placeholder:text-slate-600"
-                        />
-                    </form>
                     {searchQuery && (
                         <div className="text-[10px] uppercase tracking-wider text-cyan-500 font-bold px-1">
                             {filteredNotes.length} notes found
