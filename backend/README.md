@@ -1,4 +1,4 @@
-- This is a self-hosted solution, so there are no API usage fees or per-token costs
+This is a self-hosted solution, so there are no API usage fees or per-token costs.
 
 ## Model Choice Justification (Windows + WSL Benchmark)
 
@@ -142,22 +142,21 @@ Pull the models and start the Nexa server:
 ```bash
 nexa pull NexaAI/jina-v2-rerank-npu
 nexa pull NexaAI/Llama3.2-3B-NPU-Turbo
-
 nexa serve --host 0.0.0.0:8883 --keepalive 60000
-
 ```
 ### Make sure Docker is installed and running in WSL
 
-# Get the Windows host IP so the backend can reach Nexa
+#### Get the Windows host IP so the backend can reach Nexa
 export WINDOWS_HOST=$(ip route | grep default | awk '{print $3}')
 echo $WINDOWS_HOST
-# Example: 172.23.224.1 (update backend config if different)
+#### Example: 172.23.224.1 (update backend config if different)
 
+```bash
 cd ..
-
 docker compose up -d --build backend
+```
 
-# View backend logs
+#### View backend logs
+```bash
 docker logs hexanote-backend -f
-
-
+```
