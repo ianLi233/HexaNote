@@ -28,7 +28,14 @@ class Settings(BaseSettings):
     weaviate_timeout_query: int = 1800  # 30 minutes for slow CPU inference
     weaviate_timeout_insert: int = 300
 
-    # Ollama
+    # Nexa (running on Windows host)
+    nexa_url: str = "http://172.23.224.1:8883"  # Single Nexa server for both embeddings and LLM
+    nexa_embed_url: str = "http://172.23.224.1:8883"
+    nexa_llm_url: str = "http://172.23.224.1:8883"
+    nexa_embedding_model: str = "djuna/jina-embeddings-v2-base-en-Q5_K_M-GGUF:Q5_K_M"
+    nexa_generation_model: str = "NexaAI/Llama3.2-3B-NPU-Turbo"
+
+    # Legacy Ollama settings (kept for backward compatibility, not used)
     ollama_url: str = "http://ollama:11434"
     ollama_embedding_model: str = "mxbai-embed-large:latest"
     ollama_generation_model: str = "llama3.2:1b"

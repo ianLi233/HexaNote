@@ -27,6 +27,18 @@ class ChatService:
         # Generate session ID if not provided
         session_id = request.session_id or str(uuid.uuid4())
 
+        # Retrieve conversation history for this session
+        history_messages = self.get_history(db, session_id, limit=10)
+
+        # Format last 3 exchanges (6 messages) as conversation context
+        conversation_context = ""
+        if history_messages:
+            conversation_context = "Previous conversation:\n"
+            for msg in history_messages[-6:]:  # Last 3 exchanges
+                role_label = "You" if msg.role == "assistant" else "User"
+                conversation_context += f"{role_label}: {msg.content}\n"
+            conversation_context += "\nCurrent question:\n"
+
         # Store user message
         user_message = ChatHistory(
             session_id=session_id,
@@ -36,12 +48,17 @@ class ChatService:
         )
         db.add(user_message)
 
-        # Perform RAG search with optional additional context
+        # Combine conversation history with any additional context
+        combined_context = conversation_context
+        if request.additional_context:
+            combined_context += f"\n{request.additional_context}"
+
+        # Perform RAG search with conversation history
         rag_result = self.weaviate.generative_search(
             query=request.message,
             limit=request.limit,
             tag_filter=request.note_filter,
-            additional_context=request.additional_context
+            additional_context=combined_context if combined_context else None
         )
 
         # Format context notes

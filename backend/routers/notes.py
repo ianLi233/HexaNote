@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import json
+import threading
 
 from database import get_db
 from models.note import Note
@@ -20,6 +21,9 @@ from schemas.note_schema import (
 )
 
 router = APIRouter()
+
+# Global lock to prevent concurrent reindex operations
+_reindex_lock = threading.Lock()
 
 
 def note_to_response(note) -> NoteResponse:
@@ -119,7 +123,28 @@ def reindex_notes(
     """Re-index all notes from SQLite to Weaviate. Clears existing collection to avoid duplicates."""
     import json as json_lib
 
-    # Delete and recreate collection to clear any duplicates
+    # Try to acquire lock - if another reindex is running, return immediately
+    if not _reindex_lock.acquire(blocking=False):
+        return {
+            "message": "Reindex already in progress, skipping duplicate request",
+            "total": 0,
+            "success": 0,
+            "errors": 0,
+            "status": "skipped"
+        }
+
+    try:
+        # Delete and recreate collection to clear any duplicates
+        print("🔒 Reindex lock acquired")
+        result = _do_reindex(db, note_service, json_lib)
+        return result
+    finally:
+        _reindex_lock.release()
+        print("🔓 Reindex lock released")
+
+
+def _do_reindex(db: Session, note_service: NoteService, json_lib):
+    """Internal function that performs the actual reindex operation."""
     try:
         print("🗑️  Deleting existing 'Note' collection to clear duplicates...")
         note_service.weaviate.client.collections.delete("Note")
@@ -137,14 +162,7 @@ def reindex_notes(
 
         note_service.weaviate.client.collections.create(
             name="Note",
-            vectorizer_config=wvc.config.Configure.Vectorizer.text2vec_ollama(
-                api_endpoint=settings.ollama_url,
-                model=settings.ollama_embedding_model,
-            ),
-            generative_config=wvc.config.Configure.Generative.ollama(
-                api_endpoint=settings.ollama_url,
-                model=settings.ollama_generation_model,
-            ),
+            vectorizer_config=wvc.config.Configure.Vectorizer.none(),
             properties=[
                 wc.Property(name="note_id", data_type=wc.DataType.TEXT, skip_vectorization=True),
                 wc.Property(name="title", data_type=wc.DataType.TEXT),

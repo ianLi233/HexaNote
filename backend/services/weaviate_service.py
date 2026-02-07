@@ -1,6 +1,7 @@
 """
 Weaviate service for vector storage and RAG operations with chunking support.
 Migrated from LocalRAG Python scripts (1-create-collection.py, 3-semantic_search.py, 4-generative_search.py).
+Now uses Nexa for embeddings and generation instead of Ollama.
 """
 import weaviate
 import weaviate.classes as wvc
@@ -11,6 +12,7 @@ import json
 import requests
 
 from config import settings
+from services.nexa_client import get_nexa_client
 
 
 def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 200) -> List[str]:
@@ -60,6 +62,7 @@ class WeaviateService:
         """Initialize Weaviate client with configuration."""
         self.client = None
         self.collection_name = "Note"
+        self.nexa = get_nexa_client()  # Get Nexa client for embeddings and generation
         self._connect()
 
     def _connect(self):
@@ -112,16 +115,10 @@ class WeaviateService:
                 pass
 
             # Create Note collection with chunking support
+            # Use text2vec-none because we handle embeddings manually via Nexa
             self.client.collections.create(
                 name=self.collection_name,
-                vectorizer_config=wvc.config.Configure.Vectorizer.text2vec_ollama(
-                    api_endpoint=settings.ollama_url,
-                    model=settings.ollama_embedding_model,
-                ),
-                generative_config=wvc.config.Configure.Generative.ollama(
-                    api_endpoint=settings.ollama_url,
-                    model=settings.ollama_generation_model,
-                ),
+                vectorizer_config=wvc.config.Configure.Vectorizer.none(),
                 properties=[
                     wc.Property(
                         name="note_id",
@@ -203,7 +200,17 @@ class WeaviateService:
             total_chunks = len(content_chunks)
 
             first_uuid = None
-            for i, chunk in enumerate(content_chunks):
+
+            # Generate embeddings for all chunks at once using Nexa
+            chunk_texts = [f"{title}\n\n{chunk}" for chunk in content_chunks]  # Include title for better context
+            try:
+                embeddings = self.nexa.embed_texts(chunk_texts)
+                print(f"Generated {len(embeddings)} embeddings via Nexa for note {note_id}")
+            except Exception as e:
+                print(f"Error generating embeddings for note {note_id}: {e}")
+                return None
+
+            for i, (chunk, embedding) in enumerate(zip(content_chunks, embeddings)):
                 properties = {
                     "note_id": note_id,
                     "title": title,
@@ -215,8 +222,11 @@ class WeaviateService:
                     "updated_at": updated_at,
                 }
 
-                # Insert chunk
-                weaviate_uuid = note_collection.data.insert(properties)
+                # Insert chunk with manual embedding vector
+                weaviate_uuid = note_collection.data.insert(
+                    properties=properties,
+                    vector=embedding  # Manually provide embedding from Nexa
+                )
                 if i == 0:
                     first_uuid = str(weaviate_uuid)
 
@@ -266,6 +276,7 @@ class WeaviateService:
         """
         Search notes using semantic similarity with chunk deduplication.
         Retrieves chunks and groups them by note_id to return complete notes.
+        Now uses Nexa for embedding generation.
 
         Args:
             query: Search query string
@@ -277,6 +288,15 @@ class WeaviateService:
         """
         try:
             note_collection = self.client.collections.get(self.collection_name)
+
+            # Generate query embedding using Nexa
+            try:
+                query_embeddings = self.nexa.embed_texts([query])
+                query_vector = query_embeddings[0]
+                print(f"Generated query embedding via Nexa (dim: {len(query_vector)})")
+            except Exception as e:
+                print(f"Error generating query embedding: {e}")
+                return []
 
             # Build filters if tag_filter provided
             filters = None
@@ -291,8 +311,9 @@ class WeaviateService:
                     filters = wvc.query.Filter.any_of(tag_conditions)
 
             # Retrieve more chunks than needed to ensure we get enough unique notes
-            response = note_collection.query.near_text(
-                query=query,
+            # Use near_vector instead of near_text since we have manual embeddings
+            response = note_collection.query.near_vector(
+                near_vector=query_vector,
                 limit=limit * 3,  # Get 3x chunks to account for multi-chunk notes
                 filters=filters,
                 return_metadata=wvc.query.MetadataQuery(distance=True)
@@ -301,7 +322,7 @@ class WeaviateService:
             # Deduplicate and aggregate by note_id
             notes_dict = {}
             for obj in response.objects:
-                note_id = obj.properties.get("note_id")
+                note_id = str(obj.properties.get("note_id"))
                 if note_id not in notes_dict:
                     # Use the first chunk's data (usually most relevant)
                     notes_dict[note_id] = {
@@ -343,9 +364,17 @@ class WeaviateService:
             print(f"\n🔍 [SEARCH_WITHIN_NOTE] note_id={note_id}, query='{query}'")
             note_collection = self.client.collections.get(self.collection_name)
 
+            # Generate query embedding using Nexa
+            try:
+                query_embeddings = self.nexa.embed_texts([query])
+                query_vector = query_embeddings[0]
+            except Exception as e:
+                print(f"Error generating query embedding: {e}")
+                return None
+
             # Search within this specific note
-            response = note_collection.query.near_text(
-                query=query,
+            response = note_collection.query.near_vector(
+                near_vector=query_vector,
                 limit=50,  # Get all chunks for this note
                 filters=wvc.query.Filter.by_property("note_id").equal(note_id),
                 return_metadata=wvc.query.MetadataQuery(distance=True)
@@ -412,22 +441,25 @@ class WeaviateService:
         query: str,
         limit: int = 5,
         tag_filter: Optional[List[str]] = None,
-        additional_context: Optional[str] = None
+        additional_context: Optional[str] = None,
+        note_id_filter: Optional[str] = None  # NEW: Limit search to specific note
     ) -> Dict:
         """
-        Generate response using RAG with distance filtering and deduplication.
+        Generate response using RAG with distance filtering and re-ranking.
 
-        New approach:
-        1. Retrieve chunks with distance scores
-        2. Filter by distance threshold
-        3. Deduplicate by note_id (keep best chunk per note)
-        4. Generate response using filtered chunks
+        Pipeline:
+        1. Retrieve chunks with distance scores (optionally scoped to a note)
+        2. Filter by distance threshold (< 0.3)
+        3. Re-rank top 4 chunks using Nexa cross-encoder
+        4. Filter by rerank threshold (> 0.5), max 2 chunks
+        5. Generate response using selected chunks
 
         Args:
             query: User's question
             limit: Maximum number of unique notes to use as context
             tag_filter: Optional list of tags to filter by
-            additional_context: Additional context to include without vectorization
+            additional_context: Additional context to include (from clicked note)
+            note_id_filter: Optional note ID to limit search scope (for focused conversation)
 
         Returns:
             Dict with AI response and context notes
@@ -435,27 +467,65 @@ class WeaviateService:
         try:
             note_collection = self.client.collections.get(self.collection_name)
 
-            # Build filters if tag_filter provided
+            # Build filters for tag_filter and note_id_filter
             filters = None
+            filter_conditions = []
+
+            # Add note_id filter if provided (limit search to specific note)
+            if note_id_filter:
+                filter_conditions.append(
+                    wvc.query.Filter.by_property("note_id").equal(note_id_filter)
+                )
+
+            # Add tag filter if provided
             if tag_filter:
                 tag_conditions = [
                     wvc.query.Filter.by_property("tags").contains_any(tag)
                     for tag in tag_filter
                 ]
                 if len(tag_conditions) == 1:
-                    filters = tag_conditions[0]
+                    filter_conditions.append(tag_conditions[0])
                 else:
-                    filters = wvc.query.Filter.any_of(tag_conditions)
+                    filter_conditions.append(wvc.query.Filter.any_of(tag_conditions))
 
-            print(f"\n🤖 [GENERATIVE_SEARCH] query='{query}', limit={limit}")
+            # Combine filters
+            if len(filter_conditions) == 1:
+                filters = filter_conditions[0]
+            elif len(filter_conditions) > 1:
+                filters = wvc.query.Filter.all_of(filter_conditions)
+
+            import time
+            rag_start_time = time.time()
+
+            scope_msg = f" [SCOPED TO NOTE: {note_id_filter[:8]}...]" if note_id_filter else ""
+            print(f"\n🤖 [GENERATIVE_SEARCH] query='{query}', limit={limit}{scope_msg}")
+
+            # Generate query embedding using Nexa
+            embed_start = time.time()
+            try:
+                query_embeddings = self.nexa.embed_texts([query])
+                query_vector = query_embeddings[0]
+                embed_time = time.time() - embed_start
+                print(f"⏱️  [TIMING] Query embedding: {embed_time:.2f}s")
+                print(f"Generated query embedding via Nexa (dim: {len(query_vector)})")
+            except Exception as e:
+                print(f"Error generating query embedding: {e}")
+                return {
+                    "response": "Error generating query embedding.",
+                    "context_notes": []
+                }
 
             # Step 1: Retrieve chunks with distance scores
-            query_response = note_collection.query.near_text(
-                query=query,
+            search_start = time.time()
+            query_response = note_collection.query.near_vector(
+                near_vector=query_vector,
                 limit=limit * 4,  # Over-retrieve to have options after filtering
                 filters=filters,
                 return_metadata=wvc.query.MetadataQuery(distance=True)
             )
+
+            search_time = time.time() - search_start
+            print(f"⏱️  [TIMING] Vector search: {search_time:.2f}s")
 
             if not query_response.objects:
                 return {
@@ -464,14 +534,14 @@ class WeaviateService:
                 }
 
             # Step 2: Filter by distance threshold and log all chunks
-            DISTANCE_THRESHOLD = 0.5  # Lower distance = better match (0.0 = perfect, 2.0 = opposite)
+            DISTANCE_THRESHOLD = 0.3  # Lower distance = better match (0.0 = perfect, 2.0 = opposite)
             print(f"📏 [GENERATIVE_SEARCH] Distance threshold: {DISTANCE_THRESHOLD}")
             print(f"📚 [GENERATIVE_SEARCH] Retrieved {len(query_response.objects)} chunks before filtering:")
 
             filtered_chunks = []
             for i, obj in enumerate(query_response.objects):
                 distance = obj.metadata.distance if hasattr(obj.metadata, 'distance') else None
-                note_id = obj.properties.get("note_id")
+                note_id = str(obj.properties.get("note_id"))
                 title = obj.properties.get("title", "")
                 chunk_idx = obj.properties.get("chunk_index", 0)
 
@@ -484,35 +554,88 @@ class WeaviateService:
 
             print(f"✓ [GENERATIVE_SEARCH] {len(filtered_chunks)} chunks passed distance threshold")
 
-            # If no chunks pass threshold, keep top 3 best matches
+            # If no chunks pass threshold, keep top 10 best matches
             if not filtered_chunks:
-                print(f"⚠️  [GENERATIVE_SEARCH] No chunks passed threshold, keeping top 3 best matches")
+                print(f"⚠️  [GENERATIVE_SEARCH] No chunks passed threshold, keeping top 10 best matches")
                 filtered_chunks = [
                     (obj, obj.metadata.distance if hasattr(obj.metadata, 'distance') else 1.0)
-                    for obj in query_response.objects[:3]
+                    for obj in query_response.objects[:10]
                 ]
 
-            # Step 3: Deduplicate by note_id (keep best chunk per note)
-            note_best_chunks = {}
-            for obj, distance in filtered_chunks:
-                note_id = obj.properties.get("note_id")
+            # Step 3: Re-rank only top 10 chunks (to reduce re-ranking time)
+            # Sort by distance and take top 10
+            filtered_chunks.sort(key=lambda x: x[1])  # Lower distance = better
+            chunks_to_rerank = filtered_chunks[:10]
 
-                if note_id not in note_best_chunks or distance < note_best_chunks[note_id][1]:
-                    note_best_chunks[note_id] = (obj, distance)
+            rerank_start = time.time()
+            print(f"🔄 [GENERATIVE_SEARCH] Re-ranking top {len(chunks_to_rerank)} chunks with Nexa...")
+            try:
+                # Extract content for re-ranking (include title for better relevance scoring)
+                documents = [
+                    f"{obj.properties.get('title', '')}\n\n{obj.properties.get('content', '')}"
+                    for obj, _ in chunks_to_rerank
+                ]
 
-            deduplicated_chunks = list(note_best_chunks.values())
-            print(f"🎯 [GENERATIVE_SEARCH] {len(deduplicated_chunks)} unique notes after deduplication")
+                # Call Nexa re-ranker
+                rerank_scores = self.nexa.rerank(query, documents)
+                rerank_time = time.time() - rerank_start
+                print(f"⏱️  [TIMING] Re-ranking: {rerank_time:.2f}s")
+                print(f"✓ [GENERATIVE_SEARCH] Re-ranking complete, got {len(rerank_scores)} scores")
+                print(f"🔍 [DEBUG] Raw rerank scores: {rerank_scores}")  # Show all scores
 
-            # Sort by distance and limit to requested number
-            deduplicated_chunks.sort(key=lambda x: x[1])  # Sort by distance (lower = better)
-            final_chunks = deduplicated_chunks[:limit]
+                # Combine chunks with re-rank scores
+                reranked_chunks = [
+                    (obj, distance, rerank_score)
+                    for (obj, distance), rerank_score in zip(chunks_to_rerank, rerank_scores)
+                ]
+
+                # Log re-ranked results
+                print(f"📊 [GENERATIVE_SEARCH] Re-ranked chunks (sorted by re-rank score):")
+                sorted_reranked = sorted(reranked_chunks, key=lambda x: x[2], reverse=True)  # Higher score = better
+                for i, (obj, distance, rerank_score) in enumerate(sorted_reranked[:10]):
+                    note_id = str(obj.properties.get("note_id"))
+                    title = obj.properties.get("title", "")
+                    chunk_idx = obj.properties.get("chunk_index", 0)
+                    print(f"   [{i+1}] rerank={rerank_score:.4f}, distance={distance:.4f}, note_id={note_id[:8]}, title='{title}', chunk={chunk_idx}")
+
+            except Exception as e:
+                print(f"⚠️  [GENERATIVE_SEARCH] Re-ranking failed: {e}, falling back to distance scores")
+                # Fallback to distance-based scoring
+                reranked_chunks = [(obj, distance, 1.0 - distance) for obj, distance in chunks_to_rerank]
+
+            # Step 4: Filter by rerank score threshold and limit to max 2 chunks
+            RERANK_THRESHOLD = 0.5  # Only use chunks with rerank score > 0.5
+            MAX_CHUNKS_IN_PROMPT = 2  # Maximum chunks to send to LLM
+            print(f"📏 [GENERATIVE_SEARCH] Rerank threshold: {RERANK_THRESHOLD}, max chunks: {MAX_CHUNKS_IN_PROMPT}")
+
+            high_scoring_chunks = [
+                (obj, distance, rerank_score)
+                for obj, distance, rerank_score in reranked_chunks
+                if rerank_score > RERANK_THRESHOLD
+            ]
+
+            print(f"✓ [GENERATIVE_SEARCH] {len(high_scoring_chunks)} chunks passed rerank threshold")
+
+            # If no chunks pass threshold, use only the first chunk (best by distance)
+            if not high_scoring_chunks:
+                print(f"⚠️  [GENERATIVE_SEARCH] No chunks passed rerank threshold, using first chunk only")
+                reranked_chunks.sort(key=lambda x: x[2], reverse=True)  # Sort by rerank score
+                final_chunks = reranked_chunks[:1]  # Take only the first chunk
+            else:
+                # Sort by rerank score and take up to MAX_CHUNKS_IN_PROMPT
+                high_scoring_chunks.sort(key=lambda x: x[2], reverse=True)
+                final_chunks = high_scoring_chunks[:MAX_CHUNKS_IN_PROMPT]
+
+            # Count unique notes for logging
+            unique_note_ids = set(str(obj.properties.get("note_id")) for obj, _, _ in final_chunks)
+            print(f"🎯 [GENERATIVE_SEARCH] Selected {len(final_chunks)} chunks from {len(unique_note_ids)} unique note(s)")
 
             print(f"📊 [GENERATIVE_SEARCH] Using {len(final_chunks)} chunks for generation:")
-            for i, (obj, distance) in enumerate(final_chunks):
-                note_id = obj.properties.get("note_id")
+            for i, (obj, distance, rerank_score) in enumerate(final_chunks):
+                note_id = str(obj.properties.get("note_id"))
                 title = obj.properties.get("title", "")
                 chunk_idx = obj.properties.get("chunk_index", 0)
-                print(f"   [{i+1}] distance={distance:.4f}, note_id={note_id[:8]}, title='{title}', chunk={chunk_idx}")
+                print(f"   [{i+1}] rerank={rerank_score:.4f}, distance={distance:.4f}, note_id={note_id[:8]}, title='{title}', chunk={chunk_idx}")
 
             # Step 4: Build context from filtered chunks
             additional_context_section = ""
@@ -528,7 +651,7 @@ IMPORTANT - Additional Context Provided:
 Please focus on the additional context above to answer the question."""
 
             context_excerpts = []
-            for obj, _ in final_chunks:
+            for obj, _, _ in final_chunks:
                 title = obj.properties.get("title", "")
                 content = obj.properties.get("content", "")
                 chunk_idx = obj.properties.get("chunk_index", 0)
@@ -541,7 +664,7 @@ Please focus on the additional context above to answer the question."""
 
             context_text = "\n".join(context_excerpts)
 
-            # Step 5: Build prompt and call Ollama directly
+            # Step 5: Build prompt and call Nexa for generation
             full_prompt = f"""You are a helpful AI assistant. The user has asked the following question:
 
 "{query}"{additional_context_section}
@@ -555,28 +678,35 @@ Based on the excerpts above{" and the additional context" if additional_context 
 - If the excerpts don't contain enough information to fully answer, say so.
 - Be concise but thorough."""
 
-            # Call Ollama API directly
-            ollama_response = requests.post(
-                f"{settings.ollama_url}/api/generate",
-                json={
-                    "model": settings.ollama_generation_model,
-                    "prompt": full_prompt,
-                    "stream": False
-                },
-                timeout=120
-            )
+            # DEBUG: Print full prompt
+            print(f"\n{'='*80}")
+            print(f"📝 [DEBUG] FULL PROMPT TO LLM:")
+            print(f"{'='*80}")
+            print(full_prompt)
+            print(f"{'='*80}\n")
 
-            if ollama_response.status_code == 200:
-                generated_text = ollama_response.json().get("response", "")
-                print(f"✓ [GENERATIVE_SEARCH] Generated response: {len(generated_text)} chars")
-            else:
-                print(f"❌ [GENERATIVE_SEARCH] Ollama error: {ollama_response.status_code}")
+            # Call Nexa for generation
+            gen_start = time.time()
+            try:
+                generated_text = self.nexa.generate(full_prompt, max_tokens=1024)
+                gen_time = time.time() - gen_start
+                print(f"⏱️  [TIMING] LLM generation: {gen_time:.2f}s")
+                print(f"✓ [GENERATIVE_SEARCH] Generated response via Nexa: {len(generated_text)} chars")
+            except Exception as e:
+                print(f"❌ [GENERATIVE_SEARCH] Nexa generation error: {e}")
                 generated_text = "I encountered an error while generating a response."
 
-            # Step 6: Build context notes for response
+            # Step 6: Build context notes for response (deduplicated by note_id)
+            seen_note_ids = set()
             context_notes = []
-            for obj, _ in final_chunks:
-                note_id = obj.properties.get("note_id")
+            for obj, _, _ in final_chunks:
+                note_id = str(obj.properties.get("note_id"))
+
+                # Skip if we've already added this note
+                if note_id in seen_note_ids:
+                    continue
+                seen_note_ids.add(note_id)
+
                 title = obj.properties.get("title", "")
                 content = obj.properties.get("content", "")
 
@@ -585,6 +715,9 @@ Based on the excerpts above{" and the additional context" if additional_context 
                     "title": title,
                     "content_preview": content[:200] + "..." if len(content) > 200 else content,
                 })
+
+            total_time = time.time() - rag_start_time
+            print(f"\n⏱️  [TIMING] Total RAG pipeline: {total_time:.2f}s")
 
             return {
                 "response": generated_text if generated_text else "I couldn't generate a response based on your notes.",
