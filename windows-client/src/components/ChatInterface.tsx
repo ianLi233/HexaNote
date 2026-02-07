@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChatService, NoteService, SemanticSearchResult, Message } from '../services/api'
 import { Send, Bot, User, Loader2, Search, MessageSquare, FileText, RefreshCw, CheckCircle, Plus } from 'lucide-react'
@@ -7,9 +7,17 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { clsx } from 'clsx'
 
+export type ChatInterfaceProps = {
+    historyItems: ChatSession[]
+    setHistoryItems: Dispatch<SetStateAction<ChatSession[]>>
+    nextSessionIdRef: MutableRefObject<number>
+    activeChatId: number
+    setActiveChatId: Dispatch<SetStateAction<number>>
+}
+
 type ChatMode = 'rag' | 'semantic'
 
-type ChatSession = {
+export type ChatSession = {
     id: number
     sessionId: string
     title: string
@@ -21,7 +29,13 @@ type ChatSession = {
     isHistoryLoaded: boolean
 }
 
-export function ChatInterface() {
+export function ChatInterface({
+    historyItems,
+    setHistoryItems,
+    nextSessionIdRef,
+    activeChatId,
+    setActiveChatId,
+}: ChatInterfaceProps) {
     const navigate = useNavigate()
     const [mode, setMode] = useState<ChatMode>('rag')
     const [messages, setMessages] = useState<Message[]>([])
@@ -33,10 +47,11 @@ export function ChatInterface() {
     const [loadedNoteContext, setLoadedNoteContext] = useState<{ noteId: string; title: string } | null>(null)
     const messagesEndRef = useRef<HTMLDivElement>(null)
 
-    // chat histories
-    const [historyItems, setHistoryItems] = useState<ChatSession[]>([])
-    const nextSessionIdRef = useRef<number>(1)
-    const [activeChatId, setActiveChatId] = useState<number>(0)
+    // // chat histories
+    // const [historyItems, setHistoryItems] = useState<ChatSession[]>([])
+    // const nextSessionIdRef = useRef<number>(1)
+    // const [activeChatId, setActiveChatId] = useState<number>(0)
+
 
     // Tiny debug overlay (mini console)
     const [debugLines, setDebugLines] = useState<string[]>([])
@@ -120,7 +135,7 @@ export function ChatInterface() {
 
     // Auto reindex on page load
     useEffect(() => {
-        handleReindex(false) // Use fake reindex for instant feedback; switch to false to call backend
+        handleReindex()
         // we intentionally run once on mount only
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
@@ -192,10 +207,10 @@ export function ChatInterface() {
         setIsReindexing(true)
         setReindexMessage(null)
 
-        // ✅ Debug fake reindex path — skips backend
+        // debug fake reindex path — skips backend
         if (!notFake) {
             await new Promise(res => setTimeout(res, 800)) // keep spinner visible
-            setReindexMessage('Fake reindex complete (debug)')
+            setReindexMessage('Reindex complete (debug)')
             setIsReindexing(false)
             setTimeout(() => setReindexMessage(null), 3000)
             return
@@ -204,7 +219,7 @@ export function ChatInterface() {
         try {
             const result = await NoteService.reindex()
             setReindexMessage(result.message)
-            setTimeout(() => setReindexMessage(null), 5000)
+            setTimeout(() => setReindexMessage(null), 30000)
         } catch (error) {
             console.error('Reindex error:', error)
             setReindexMessage('Failed to reindex notes')
@@ -596,7 +611,7 @@ export function ChatInterface() {
                 </div>
             </div>
             {/* Tiny debug overlay (shows recent debug lines) */}
-            {debugLines.length > 0 && (
+            {/* {debugLines.length > 0 && (
                 <div className="fixed bottom-3 right-3 z-50 w-[340px] max-w-[90vw]">
                     <div className="bg-slate-950/90 border border-slate-700 rounded-lg shadow-lg overflow-hidden">
                         <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800">
@@ -618,7 +633,7 @@ export function ChatInterface() {
                         </div>
                     </div>
                 </div>
-            )}
+            )} */}
         </div>
     )
 }
