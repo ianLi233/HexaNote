@@ -12,6 +12,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -79,13 +81,13 @@ fun PermissionRequiredScreen(onRequestPermission: () -> Unit) {
         verticalArrangement = Arrangement.Center
     ) {
         Icon(
-            Icons.Default.Mic,
-            contentDescription = null,
-            modifier = Modifier.size(64.dp),
-            tint = MaterialTheme.colorScheme.primary
+            painter = painterResource(id = R.drawable.icon),
+            contentDescription = "App Logo",
+            modifier = Modifier.size(80.dp),
+            tint = Color.Unspecified
         )
         
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(24.dp))
         
         Text(
             "Microphone Permission Required",
@@ -96,7 +98,7 @@ fun PermissionRequiredScreen(onRequestPermission: () -> Unit) {
         Spacer(modifier = Modifier.height(8.dp))
         
         Text(
-            "This app needs microphone access to record your questions",
+            "HexaNote needs microphone access to record your questions",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 32.dp)

@@ -22,12 +22,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.notesassistant.app.R
 import com.notesassistant.app.network.SemanticSearchResult
 import com.notesassistant.app.ui.theme.*
 import com.notesassistant.app.viewmodel.ChatMessage
@@ -131,26 +133,31 @@ fun Header() {
         color = Slate900.copy(alpha = 0.5f),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(
+        Row(
             modifier = Modifier
-                .padding(16.dp)
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                "Chat with RAG (slow) or Search by Embeddings (fast)",
-                style = MaterialTheme.typography.titleMedium,
-                color = Color.White,
-                fontWeight = FontWeight.Bold
+            Icon(
+                painter = painterResource(id = R.drawable.icon),
+                contentDescription = "App Logo",
+                modifier = Modifier.size(40.dp),
+                tint = Color.Unspecified
             )
-            Text(
-                "Powered by Ollama and Weaviate", 
-                style = MaterialTheme.typography.bodySmall,
-                color = Slate400
-            )
-            Text(
-                "Reindex First if you have updated your notes", 
-                style = MaterialTheme.typography.bodySmall,
-                color = Slate400
-            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
+                Text(
+                    "HexaNote Assistant",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Powered by Ollama and Weaviate", 
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Slate400
+                )
+            }
         }
     }
 }
@@ -236,7 +243,7 @@ fun MessagesList(messages: List<ChatMessage>, isProcessing: Boolean) {
 
     if (messages.isEmpty() && !isProcessing) {
         EmptyState(
-            icon = Icons.Default.SmartToy,
+            icon = painterResource(id = R.drawable.icon),
             title = "Ask anything about your notes...",
             subtitle = "AI will search and synthesize answers from your notes"
         )
@@ -268,7 +275,7 @@ fun MessageBubble(message: ChatMessage) {
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
         if (!isUser) {
-            Avatar(color = Purple600, icon = Icons.Default.SmartToy)
+            AppAvatar()
             Spacer(modifier = Modifier.width(8.dp))
         }
         
@@ -291,6 +298,24 @@ fun MessageBubble(message: ChatMessage) {
             Spacer(modifier = Modifier.width(8.dp))
             Avatar(color = Cyan600, icon = Icons.Default.Person)
         }
+    }
+}
+
+@Composable
+fun AppAvatar() {
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .background(Slate800),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            painter = painterResource(id = R.drawable.icon), 
+            contentDescription = null, 
+            modifier = Modifier.size(20.dp), 
+            tint = Color.Unspecified
+        )
     }
 }
 
@@ -319,7 +344,7 @@ fun SearchResultsList(
 ) {
     if (results.isEmpty() && !isProcessing) {
         EmptyState(
-            icon = Icons.Default.Search,
+            icon = painterResource(id = R.drawable.icon),
             title = "Search for notes semantically...",
             subtitle = "Find notes by meaning, not just keywords"
         )
@@ -545,7 +570,7 @@ fun NoteDetailDialog(
 val Purple900 = Color(0xFF581C87)
 
 @Composable
-fun EmptyState(icon: ImageVector, title: String, subtitle: String) {
+fun EmptyState(icon: androidx.compose.ui.graphics.painter.Painter, title: String, subtitle: String) {
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.Center,
@@ -561,7 +586,7 @@ fun EmptyState(icon: ImageVector, title: String, subtitle: String) {
 @Composable
 fun TypingIndicator() {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
-        Avatar(color = Purple600, icon = Icons.Default.SmartToy)
+        AppAvatar()
         Spacer(modifier = Modifier.width(8.dp))
         Surface(
             color = Slate800,
