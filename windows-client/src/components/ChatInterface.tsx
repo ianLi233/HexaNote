@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChatService, NoteService, ContextNote, SemanticSearchResult } from '../services/api'
-import { Send, Bot, User, Loader2, Search, MessageSquare, FileText, RefreshCw } from 'lucide-react'
+import { ChatService, NoteService, ContextNote, SemanticSearchResult, Message } from '../services/api'
+import { Send, Bot, User, Loader2, Search, MessageSquare, FileText, RefreshCw, CheckCircle, Plus } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -9,10 +9,16 @@ import { clsx } from 'clsx'
 
 type ChatMode = 'rag' | 'semantic'
 
-interface Message {
-    role: 'user' | 'assistant' | 'system'
-    content: string
-    sources?: ContextNote[]
+type ChatSession = {
+    id: number
+    sessionId: string
+    title: string
+    createdAt: number
+    updatedAt: number
+    mode: 'rag' | 'semantic'
+    messages: Message[]
+    isHistoryLoading: boolean
+    isHistoryLoaded: boolean
 }
 
 export function ChatInterface() {
@@ -22,11 +28,87 @@ export function ChatInterface() {
     const [searchResults, setSearchResults] = useState<SemanticSearchResult[]>([])
     const [input, setInput] = useState('')
     const [isLoading, setIsLoading] = useState(false)
-    const [sessionId, setSessionId] = useState<string | null>(null)
     const [isReindexing, setIsReindexing] = useState(false)
     const [reindexMessage, setReindexMessage] = useState<string | null>(null)
     const [loadedNoteContext, setLoadedNoteContext] = useState<{ noteId: string; title: string } | null>(null)
     const messagesEndRef = useRef<HTMLDivElement>(null)
+
+    // chat histories
+    const [historyItems, setHistoryItems] = useState<ChatSession[]>([])
+    const nextSessionIdRef = useRef<number>(1)
+    const [activeChatId, setActiveChatId] = useState<number>(0)
+
+    // Tiny debug overlay (mini console)
+    const [debugLines, setDebugLines] = useState<string[]>([])
+    const pushDebug = (msg: string) => {
+        const ts = new Date().toLocaleTimeString()
+        setDebugLines(prev => {
+            const next = [...prev, `[${ts}] ${msg}`]
+            return next.length > 80 ? next.slice(next.length - 80) : next
+        })
+    }
+    const clearDebug = () => setDebugLines([])
+
+    const createChatSessionLocal = (title?: string) => {
+        const id = nextSessionIdRef.current++
+        const now = Date.now()
+
+        const newSession: ChatSession = {
+            id,
+            // placeholder until we fetch server session id
+            sessionId: `pending-${id}`,
+            title: title ?? `New Chat ${id}`,
+            createdAt: now,
+            updatedAt: now,
+            mode,
+            messages: [],
+            isHistoryLoading: false,
+            isHistoryLoaded: false
+        }
+
+        setHistoryItems(prev => [newSession, ...prev])
+        setActiveChatId(id)
+        pushDebug(`Created new chat session: ${newSession.title} (sessionId: ${newSession.sessionId})`)
+
+        return newSession
+    }
+
+    const setChatSessionId = (chatId: number, sessionId: string) => {
+        setHistoryItems(prev =>
+            prev.map(s => (s.id === chatId ? { ...s, sessionId, updatedAt: Date.now() } : s))
+        )
+    }
+
+    const ensureServerSessionId = async (chatId: number) => {
+        const existing = historyItems.find(s => s.id === chatId)
+        if (existing && existing.sessionId && !existing.sessionId.startsWith('pending-')) {
+            return existing.sessionId
+        }
+
+        pushDebug('Requesting server session id…')
+        let createdSessionId = ''
+        try {
+            createdSessionId = await ChatService.createSession()
+        } catch {
+            createdSessionId = `local-${chatId}`
+        }
+
+        setChatSessionId(chatId, createdSessionId)
+        pushDebug(`Session id ready for chat ${chatId}: ${createdSessionId}`)
+        return createdSessionId
+    }
+
+    const handleNewChat = () => {
+        // Reset to sentinel “no active chat yet”; first send will create a new chat session
+        setActiveChatId(0)
+
+        // Reset current view state (messages are currently global, not per-session)
+        setMessages([])
+        setSearchResults([])
+        setLoadedNoteContext(null)
+        setInput('')
+        pushDebug('Switched to new chat')
+    }
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -36,25 +118,96 @@ export function ChatInterface() {
         scrollToBottom()
     }, [messages, searchResults])
 
+    // Auto reindex on page load
+    useEffect(() => {
+        handleReindex(false) // Use fake reindex for instant feedback; switch to false to call backend
+        // we intentionally run once on mount only
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
     const handleModeChange = (newMode: ChatMode) => {
         setMode(newMode)
         // Clear state when switching modes
         setMessages([])
         setSearchResults([])
-        setSessionId(null)
         setInput('')
     }
 
-    const handleReindex = async () => {
+    const updateChatSession = (chatId: number, patch: Partial<ChatSession>) => {
+        setHistoryItems(prev => prev.map(s => (s.id === chatId ? { ...s, ...patch } : s)))
+    }
+
+    const normalizeRole = (role: string): Message['role'] => {
+        if (role === 'user' || role === 'assistant' || role === 'system') return role
+        return 'assistant'
+    }
+
+    const handleSelectChat = async (chatId: number) => {
+        setActiveChatId(chatId)
+        setSearchResults([])
+        setLoadedNoteContext(null)
+        setInput('')
+
+        // Show cached messages immediately if we have them
+        const cached = historyItems.find(s => s.id === chatId)
+        if (cached?.messages && cached.messages.length > 0) {
+            setMessages(cached.messages)
+        } else {
+            setMessages([])
+        }
+
+        updateChatSession(chatId, { isHistoryLoading: true })
+        setIsLoading(true)
+
+        try {
+            const sid = await ensureServerSessionId(chatId)
+            pushDebug(`Loading history for chat ${chatId} (${sid})…`)
+
+            const hist = await ChatService.getHistory(sid)
+            pushDebug(`History loaded for chat ${chatId}: ${hist}`)
+            const mapped: Message[] = (hist.messages || []).map(m => ({
+                role: normalizeRole(m.role),
+                content: m.content,
+            }))
+
+            // Cache into the session and update the visible transcript
+            updateChatSession(chatId, {
+                sessionId: hist.session_id || sid,
+                messages: mapped,
+                isHistoryLoaded: true,
+                isHistoryLoading: false,
+                updatedAt: Date.now(),
+            })
+            setMessages(mapped)
+            pushDebug(`Loaded ${mapped.length} messages for chat ${chatId}`)
+        } catch (e) {
+            updateChatSession(chatId, { isHistoryLoading: false })
+            pushDebug(`History load error: ${e instanceof Error ? e.message : String(e)}`)
+        } finally {
+            setIsLoading(false)
+        }
+    }
+
+    const handleReindex = async (notFake: boolean = true) => {
         setIsReindexing(true)
         setReindexMessage(null)
+
+        // ✅ Debug fake reindex path — skips backend
+        if (!notFake) {
+            await new Promise(res => setTimeout(res, 800)) // keep spinner visible
+            setReindexMessage('Fake reindex complete (debug)')
+            setIsReindexing(false)
+            setTimeout(() => setReindexMessage(null), 3000)
+            return
+        }
+
         try {
             const result = await NoteService.reindex()
-            setReindexMessage(`✓ ${result.message}`)
+            setReindexMessage(result.message)
             setTimeout(() => setReindexMessage(null), 5000)
         } catch (error) {
             console.error('Reindex error:', error)
-            setReindexMessage('❌ Failed to reindex notes')
+            setReindexMessage('Failed to reindex notes')
         } finally {
             setIsReindexing(false)
         }
@@ -62,13 +215,29 @@ export function ChatInterface() {
 
     const handleSend = async () => {
         if (!input.trim() || isLoading) return
-
+        const userText = input
         setIsLoading(true)
+
+        // Ensure there is a chat session for this send (create locally immediately)
+        let chatId = activeChatId
+        if (activeChatId === 0) {
+            const newSession = createChatSessionLocal()
+            chatId = newSession.id
+        }
+
+        // Show the user message immediately
+        if (mode === 'rag') {
+            setMessages(prev => [...prev, { role: 'user', content: userText }])
+        }
+        setInput('')
+
+        // Obtain a server session id (await, but UI is already updated)
+        const ensuredSessionId = await ensureServerSessionId(chatId)
 
         if (mode === 'rag') {
             // RAG mode: use LLM with context
-            const userMessage: Message = { role: 'user', content: input }
-            setMessages(prev => [...prev, userMessage])
+            // const userMessage: Message = { role: 'user', content: input }
+            // setMessages(prev => [...prev, userMessage])
 
             // Prepare additional context by searching within loaded note
             let additionalContext: string | undefined = undefined
@@ -78,7 +247,7 @@ export function ChatInterface() {
                     console.log('🔍 [ChatInterface] Calling searchWithinNote...')
                     const searchResult = await NoteService.searchWithinNote(
                         loadedNoteContext.noteId,
-                        input,
+                        userText,
                         2  // 2 chunks before and after
                     )
                     console.log('✓ [ChatInterface] Search result:', searchResult)
@@ -90,18 +259,8 @@ export function ChatInterface() {
                 }
             }
 
-            setInput('')
-            if (loadedNoteContext) {
-                setLoadedNoteContext(null) // Clear after use
-            }
-
             try {
-                const response = await ChatService.query(input, sessionId, additionalContext)
-
-                if (!sessionId && response.session_id) {
-                    setSessionId(response.session_id)
-                }
-
+                const response = await ChatService.query(userText, ensuredSessionId, additionalContext)
                 const botMessage: Message = {
                     role: 'assistant',
                     content: response.message,
@@ -112,6 +271,12 @@ export function ChatInterface() {
                 console.error('Chat error:', error)
                 setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I encountered an error retrieving the answer.' }])
             }
+
+            setInput('')
+            if (loadedNoteContext) {
+                setLoadedNoteContext(null) // Clear after use
+            }
+
         } else {
             // Semantic mode: just search, no LLM
             const query = input
@@ -155,227 +320,305 @@ export function ChatInterface() {
     }
 
     return (
-        <div className="flex flex-col h-full w-full overflow-hidden bg-slate-900">
-            {/* Mode Tabs + Reindex Button */}
-            <div className="flex-shrink-0 flex items-center justify-between border-b border-slate-800 bg-slate-900/80">
-                <div className="flex">
-                    <button
-                        onClick={() => handleModeChange('rag')}
-                        className={clsx(
-                            "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2",
-                            mode === 'rag'
-                                ? "border-cyan-500 text-cyan-400 bg-slate-800/50"
-                                : "border-transparent text-slate-400 hover:text-slate-300 hover:bg-slate-800/30"
-                        )}
-                    >
-                        <MessageSquare size={16} />
-                        RAG Chat
-                    </button>
-                    <button
-                        onClick={() => handleModeChange('semantic')}
-                        className={clsx(
-                            "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2",
-                            mode === 'semantic'
-                                ? "border-purple-500 text-purple-400 bg-slate-800/50"
-                                : "border-transparent text-slate-400 hover:text-slate-300 hover:bg-slate-800/30"
-                        )}
-                    >
-                        <Search size={16} />
-                        Semantic Search
-                    </button>
-                </div>
-
-                {/* Reindex Button */}
-                <div className="flex items-center gap-2 px-3">
-                    {reindexMessage && (
-                        <span className="text-xs text-green-400">{reindexMessage}</span>
-                    )}
-                    <button
-                        onClick={handleReindex}
-                        disabled={isReindexing}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-cyan-400 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50"
-                        title="Re-sync all notes to vector database"
-                    >
-                        <RefreshCw size={14} className={isReindexing ? 'animate-spin' : ''} />
-                        {isReindexing ? 'Reindexing...' : 'Reindex'}
-                    </button>
-                </div>
-            </div>
-
-            {/* Content Area */}
-            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-                {mode === 'rag' ? (
-                    // RAG Chat Messages
-                    <>
-                        {messages.length === 0 && (
-                            <div className="flex flex-col items-center justify-center h-full text-slate-500">
-                                <Bot className="w-16 h-16 mb-4 opacity-50" />
-                                <p className="text-center">Ask anything about your notes...</p>
-                                <p className="text-xs text-slate-600 mt-2">AI will search and synthesize answers from your notes</p>
-                            </div>
-                        )}
-
-                        {messages.map((msg, idx) => (
-                            msg.role === 'system' ? (
-                                // System messages (note loaded notifications)
-                                <div key={idx} className="flex justify-center max-w-3xl mx-auto">
-                                    <div className="bg-amber-900/20 border border-amber-600/30 rounded-lg px-3 py-2 text-xs text-amber-300">
-                                        {msg.content}
-                                    </div>
-                                </div>
-                            ) : (
-                                // User and Assistant messages
-                                <div
-                                    key={idx}
-                                    className={clsx(
-                                        "flex gap-3 max-w-3xl mx-auto",
-                                        msg.role === 'user' ? "flex-row-reverse" : "flex-row"
-                                    )}
-                                >
-                                    <div className={clsx(
-                                        "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0",
-                                        msg.role === 'user' ? "bg-cyan-600" : "bg-purple-600"
-                                    )}>
-                                        {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
-                                    </div>
-
-                                    <div className={clsx(
-                                        "rounded-lg p-3 max-w-[80%] text-sm",
-                                        msg.role === 'user'
-                                            ? "bg-cyan-600/10 text-cyan-100 border border-cyan-600/20"
-                                            : "bg-slate-800 text-slate-100 border border-slate-700"
-                                    )}>
-                                        <ReactMarkdown
-                                            className="prose prose-invert prose-sm max-w-none"
-                                            remarkPlugins={[remarkMath]}
-                                            rehypePlugins={[rehypeKatex]}
-                                        >
-                                            {msg.content}
-                                        </ReactMarkdown>
-
-                                        {msg.sources && msg.sources.length > 0 && (
-                                            <div className="mt-3 pt-2 border-t border-slate-700">
-                                                <p className="text-xs text-slate-400 font-semibold mb-1">Sources (click to load full content):</p>
-                                                <div className="flex flex-wrap gap-2">
-                                                    {msg.sources.map((source, i) => (
-                                                        <button
-                                                            key={i}
-                                                            onClick={() => handleLoadNoteContext(source.note_id, source.title)}
-                                                            className="text-xs bg-slate-900 px-2 py-1 rounded text-purple-300 hover:bg-purple-900/50 hover:text-purple-200 transition-colors cursor-pointer"
-                                                        >
-                                                            {source.title}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            )
-                        ))}
-                    </>
-                ) : (
-                    // Semantic Search Results
-                    <>
-                        {searchResults.length === 0 && !isLoading && (
-                            <div className="flex flex-col items-center justify-center h-full text-slate-500">
-                                <Search className="w-16 h-16 mb-4 opacity-50" />
-                                <p className="text-center">Search for notes semantically...</p>
-                                <p className="text-xs text-slate-600 mt-2">Find notes by meaning, not just keywords</p>
-                            </div>
-                        )}
-
-                        {searchResults.length > 0 && (
-                            <div className="max-w-3xl mx-auto space-y-3">
-                                <p className="text-xs text-purple-400 font-semibold uppercase tracking-wider">
-                                    {searchResults.length} result{searchResults.length !== 1 ? 's' : ''} found
-                                </p>
-                                {searchResults.map((result, idx) => (
-                                    <div
-                                        key={idx}
-                                        onClick={() => navigate(`/note/${result.note_id}`)}
-                                        className="bg-slate-800 border border-slate-700 rounded-lg p-4 hover:border-purple-500/50 transition-colors cursor-pointer"
-                                    >
-                                        <div className="flex items-start gap-3">
-                                            <FileText className="w-5 h-5 text-purple-400 flex-shrink-0 mt-0.5" />
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-center justify-between">
-                                                    <h3 className="font-medium text-slate-200 truncate">
-                                                        {result.title || 'Untitled Note'}
-                                                    </h3>
-                                                    {result.relevance_score && (
-                                                        <span className="text-[10px] text-purple-300 bg-purple-900/50 px-2 py-0.5 rounded ml-2">
-                                                            {(result.relevance_score * 100).toFixed(0)}% match
-                                                        </span>
-                                                    )}
-                                                </div>
-                                                <p className="text-sm text-slate-400 mt-1 line-clamp-2">
-                                                    {result.content.substring(0, 150)}...
-                                                </p>
-                                                {result.tags && result.tags.length > 0 && (
-                                                    <div className="flex gap-1 mt-2 flex-wrap">
-                                                        {result.tags.slice(0, 3).map((tag: string, i: number) => (
-                                                            <span key={i} className="text-[10px] bg-slate-900 px-2 py-0.5 rounded text-purple-300">
-                                                                {tag}
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </>
-                )}
-
-                {isLoading && (
-                    <div className="flex gap-3 max-w-3xl mx-auto">
-                        <div className={clsx(
-                            "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0",
-                            mode === 'rag' ? "bg-purple-600" : "bg-purple-600"
-                        )}>
-                            {mode === 'rag' ? <Bot size={16} /> : <Search size={16} />}
+        <div className="flex flex-1 min-h-0 w-full overflow-hidden bg-slate-900">
+            {/* History Sidebar (placeholder) */}
+            <div className="w-72 flex-shrink-0 border-r border-slate-800 bg-slate-900/60 flex flex-col min-h-0">
+                <div className="p-3 border-b border-slate-800">
+                    <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                            Chat History
                         </div>
-                        <div className="bg-slate-800 rounded-lg p-3 border border-slate-700">
-                            <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
-                        </div>
-                    </div>
-                )}
-                <div ref={messagesEndRef} />
-            </div>
-
-            {/* Input Area */}
-            <div className="flex-shrink-0 p-4 border-t border-slate-800 bg-slate-900/50 backdrop-blur-sm">
-                <div className="max-w-3xl mx-auto relative">
-                    {loadedNoteContext && (
-                        <div className="mb-2 text-xs text-amber-400 bg-amber-900/20 border border-amber-600/30 rounded px-2 py-1">
-                            💡 Note context loaded - will be included in your next question
-                        </div>
-                    )}
-                    <div className="relative cursor-text">
-                        <textarea
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            placeholder={mode === 'rag' ? "Ask a question about your notes..." : "Search for notes by meaning..."}
-                            className="w-full bg-slate-800 text-white rounded-xl pl-4 pr-12 py-3 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 resize-none h-[52px] scrollbar-hide"
-                            autoFocus
-                        />
                         <button
-                            onClick={handleSend}
-                            disabled={isLoading || !input.trim()}
-                            className={clsx(
-                                "absolute right-2 top-2 p-2 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors",
-                                mode === 'rag' ? "bg-cyan-600 hover:bg-cyan-500" : "bg-purple-600 hover:bg-purple-500"
-                            )}
+                            onClick={handleNewChat}
+                            className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-slate-800 text-slate-300 hover:text-slate-100 hover:bg-slate-700 transition-colors"
+                            title="New Chat"
+                            aria-label="New Chat"
                         >
-                            {mode === 'rag' ? <Send size={18} /> : <Search size={18} />}
+                            <Plus size={16} />
                         </button>
                     </div>
                 </div>
+
+                <div className="p-2 overflow-y-auto flex-1 min-h-0">
+                {historyItems.map((h) => (
+                    <button
+                        key={h.id}
+                        onClick={() => handleSelectChat(h.id)}
+                        className={clsx(
+                            "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
+                            activeChatId === h.id
+                            ? "bg-slate-800 text-slate-100"
+                            : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+                        )}
+                    >
+                    <div className="truncate">{h.title}</div>
+                    </button>
+                ))}
+                </div>
             </div>
+
+            {/* RAG Messages Pane */}
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-slate-900">
+                {/* Mode Tabs + Reindex Button */}
+                <div className="flex-shrink-0 flex items-center justify-between border-b border-slate-800 bg-slate-900/80">
+                    <div className="flex">
+                        <button
+                            onClick={() => handleModeChange('rag')}
+                            className={clsx(
+                                "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2",
+                                mode === 'rag'
+                                    ? "border-cyan-500 text-cyan-400 bg-slate-800/50"
+                                    : "border-transparent text-slate-400 hover:text-slate-300 hover:bg-slate-800/30"
+                            )}
+                        >
+                            <MessageSquare size={16} />
+                            RAG Chat
+                        </button>
+                        <button
+                            onClick={() => handleModeChange('semantic')}
+                            className={clsx(
+                                "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2",
+                                mode === 'semantic'
+                                    ? "border-purple-500 text-purple-400 bg-slate-800/50"
+                                    : "border-transparent text-slate-400 hover:text-slate-300 hover:bg-slate-800/30"
+                            )}
+                        >
+                            <Search size={16} />
+                            Semantic Search
+                        </button>
+                    </div>
+
+                    {/* Reindex Button */}
+                    <div className="flex items-center gap-2 px-3">
+                        {/* Status div — LEFT of button */}
+                        <span className={clsx(
+                            "text-xs inline-flex items-center gap-1.5",
+                            isReindexing ? "text-amber-300" : "text-slate-500"
+                        )}>
+                            {isReindexing ? (
+                                <RefreshCw size={14} className="animate-spin" />
+                            ) : reindexMessage ? (
+                                <CheckCircle size={14} />
+                            ) : (
+                                <RefreshCw size={14} />
+                            )}
+                            {isReindexing
+                                ? "Reindexing…"
+                                : reindexMessage
+                                    ? reindexMessage
+                                    : "Index Up-to-date"}
+                        </span>
+                        {/* <button
+                            onClick={handleReindex}
+                            disabled={isReindexing}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-cyan-400 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50"
+                            title="Re-sync all notes to vector database"
+                        >
+                            <RefreshCw size={14} className={isReindexing ? 'animate-spin' : ''} />
+                            {isReindexing ? 'Reindexing...' : 'Reindex'}
+                        </button> */}
+                    </div>
+                </div>
+
+                {/* Content Area */}
+                <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+                    {mode === 'rag' ? (
+                        // RAG Chat Messages
+                        <>
+                            {messages.length === 0 && (
+                                <div className="flex flex-col items-center justify-center h-full text-slate-500">
+                                    <Bot className="w-16 h-16 mb-4 opacity-50" />
+                                    <p className="text-center">Ask anything about your notes...</p>
+                                    <p className="text-xs text-slate-600 mt-2">AI will search and synthesize answers from your notes</p>
+                                </div>
+                            )}
+
+                            {messages.map((msg, idx) => (
+                                msg.role === 'system' ? (
+                                    // System messages (note loaded notifications)
+                                    <div key={idx} className="flex justify-center max-w-3xl mx-auto">
+                                        <div className="bg-amber-900/20 border border-amber-600/30 rounded-lg px-3 py-2 text-xs text-amber-300">
+                                            {msg.content}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    // User and Assistant messages
+                                    <div
+                                        key={idx}
+                                        className={clsx(
+                                            "flex gap-3 max-w-3xl mx-auto",
+                                            msg.role === 'user' ? "flex-row-reverse" : "flex-row"
+                                        )}
+                                    >
+                                        <div className={clsx(
+                                            "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0",
+                                            msg.role === 'user' ? "bg-cyan-600" : "bg-purple-600"
+                                        )}>
+                                            {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
+                                        </div>
+
+                                        <div className={clsx(
+                                            "rounded-lg p-3 max-w-[80%] text-sm",
+                                            msg.role === 'user'
+                                                ? "bg-cyan-600/10 text-cyan-100 border border-cyan-600/20"
+                                                : "bg-slate-800 text-slate-100 border border-slate-700"
+                                        )}>
+                                            <ReactMarkdown
+                                                className="prose prose-invert prose-sm max-w-none"
+                                                remarkPlugins={[remarkMath]}
+                                                rehypePlugins={[rehypeKatex]}
+                                            >
+                                                {msg.content}
+                                            </ReactMarkdown>
+
+                                            {msg.sources && msg.sources.length > 0 && (
+                                                <div className="mt-3 pt-2 border-t border-slate-700">
+                                                    <p className="text-xs text-slate-400 font-semibold mb-1">Sources (click to load full content):</p>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {msg.sources.map((source, i) => (
+                                                            <button
+                                                                key={i}
+                                                                onClick={() => handleLoadNoteContext(source.note_id, source.title)}
+                                                                className="text-xs bg-slate-900 px-2 py-1 rounded text-purple-300 hover:bg-purple-900/50 hover:text-purple-200 transition-colors cursor-pointer"
+                                                            >
+                                                                {source.title}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )
+                            ))}
+                        </>
+                    ) : (
+                        // Semantic Search Results
+                        <>
+                            {searchResults.length === 0 && !isLoading && (
+                                <div className="flex flex-col items-center justify-center h-full text-slate-500">
+                                    <Search className="w-16 h-16 mb-4 opacity-50" />
+                                    <p className="text-center">Search for notes semantically...</p>
+                                    <p className="text-xs text-slate-600 mt-2">Find notes by meaning, not just keywords</p>
+                                </div>
+                            )}
+
+                            {searchResults.length > 0 && (
+                                <div className="max-w-3xl mx-auto space-y-3">
+                                    <p className="text-xs text-purple-400 font-semibold uppercase tracking-wider">
+                                        {searchResults.length} result{searchResults.length !== 1 ? 's' : ''} found
+                                    </p>
+                                    {searchResults.map((result, idx) => (
+                                        <div
+                                            key={idx}
+                                            onClick={() => navigate(`/note/${result.note_id}`)}
+                                            className="bg-slate-800 border border-slate-700 rounded-lg p-4 hover:border-purple-500/50 transition-colors cursor-pointer"
+                                        >
+                                            <div className="flex items-start gap-3">
+                                                <FileText className="w-5 h-5 text-purple-400 flex-shrink-0 mt-0.5" />
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center justify-between">
+                                                        <h3 className="font-medium text-slate-200 truncate">
+                                                            {result.title || 'Untitled Note'}
+                                                        </h3>
+                                                        {result.relevance_score && (
+                                                            <span className="text-[10px] text-purple-300 bg-purple-900/50 px-2 py-0.5 rounded ml-2">
+                                                                {(result.relevance_score * 100).toFixed(0)}% match
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <p className="text-sm text-slate-400 mt-1 line-clamp-2">
+                                                        {result.content.substring(0, 150)}...
+                                                    </p>
+                                                    {result.tags && result.tags.length > 0 && (
+                                                        <div className="flex gap-1 mt-2 flex-wrap">
+                                                            {result.tags.slice(0, 3).map((tag: string, i: number) => (
+                                                                <span key={i} className="text-[10px] bg-slate-900 px-2 py-0.5 rounded text-purple-300">
+                                                                    {tag}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </>
+                    )}
+
+                    {isLoading && (
+                        <div className="flex gap-3 max-w-3xl mx-auto">
+                            <div className={clsx(
+                                "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0",
+                                mode === 'rag' ? "bg-purple-600" : "bg-purple-600"
+                            )}>
+                                {mode === 'rag' ? <Bot size={16} /> : <Search size={16} />}
+                            </div>
+                            <div className="bg-slate-800 rounded-lg p-3 border border-slate-700">
+                                <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
+                            </div>
+                        </div>
+                    )}
+                    <div ref={messagesEndRef} />
+                </div>
+
+                {/* Input Area */}
+                <div className="flex-shrink-0 p-4 border-t border-slate-800 bg-slate-900/50 backdrop-blur-sm">
+                    <div className="max-w-3xl mx-auto relative">
+                        {loadedNoteContext && (
+                            <div className="mb-2 text-xs text-amber-400 bg-amber-900/20 border border-amber-600/30 rounded px-2 py-1">
+                                💡 Note context loaded - will be included in your next question
+                            </div>
+                        )}
+                        <div className="relative cursor-text">
+                            <textarea
+                                value={input}
+                                onChange={(e) => setInput(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                placeholder={mode === 'rag' ? "Ask a question about your notes..." : "Search for notes by meaning..."}
+                                className="w-full bg-slate-800 text-white rounded-xl pl-4 pr-12 py-3 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 resize-none h-[52px] scrollbar-hide"
+                                autoFocus
+                            />
+                            <button
+                                onClick={handleSend}
+                                disabled={isLoading || !input.trim()}
+                                className={clsx(
+                                    "absolute right-2 top-2 p-2 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors",
+                                    mode === 'rag' ? "bg-cyan-600 hover:bg-cyan-500" : "bg-purple-600 hover:bg-purple-500"
+                                )}
+                            >
+                                {mode === 'rag' ? <Send size={18} /> : <Search size={18} />}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {/* Tiny debug overlay (shows recent debug lines) */}
+            {debugLines.length > 0 && (
+                <div className="fixed bottom-3 right-3 z-50 w-[340px] max-w-[90vw]">
+                    <div className="bg-slate-950/90 border border-slate-700 rounded-lg shadow-lg overflow-hidden">
+                        <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800">
+                            <div className="text-[11px] text-slate-300">Debug</div>
+                            <button
+                                onClick={clearDebug}
+                                className="text-[11px] text-slate-400 hover:text-slate-200 px-2 py-0.5 rounded hover:bg-slate-800"
+                                title="Clear"
+                            >
+                                Clear
+                            </button>
+                        </div>
+                        <div className="max-h-[160px] overflow-y-auto px-2 py-1 space-y-1">
+                            {debugLines.slice(-20).map((line, i) => (
+                                <div key={i} className="text-[10px] leading-snug text-slate-300 whitespace-pre-wrap break-words">
+                                    {line}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }

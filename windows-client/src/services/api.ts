@@ -43,6 +43,23 @@ export interface ChatResponse {
     created_at: string
 }
 
+export interface Message {
+    role: 'user' | 'assistant' | 'system'
+    content: string
+    sources?: ContextNote[]
+}
+
+export interface ChatHistoryMessage {
+    session_id: string
+    limit: number
+}
+
+export interface ChatHistoryResponse {
+    messages: Message[]
+    session_id: string
+    total: number
+}
+
 const api = axios.create({
     baseURL: API_Base,
     headers: {
@@ -103,7 +120,12 @@ export const NoteService = {
 }
 
 export const ChatService = {
-    query: async (message: string, sessionId?: string | null, additionalContext?: string) => {
+    createSession: async () => {
+        const response = await api.post<{ session_id: string }>('/chat/sessions')
+        return response.data.session_id
+    },
+
+    query: async (message: string, sessionId: string | null, additionalContext?: string) => {
         const payload: any = {
             message,
             limit: 5
@@ -116,6 +138,16 @@ export const ChatService = {
         }
 
         const response = await api.post<ChatResponse>('/chat/query', payload)
+        return response.data
+    },
+
+    getHistory: async (sessionId: string, limit: number = 50) => {
+        const response = await api.get<ChatHistoryResponse>('/chat/history', {
+            params: {
+                session_id: sessionId,
+                limit,
+            },
+        })
         return response.data
     }
 }

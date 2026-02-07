@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { NoteService, Note } from '../services/api'
 import { NoteEditor } from '../components/NoteEditor'
-import { Plus, Search, FileText, Loader2, Trash2, RefreshCw } from 'lucide-react'
+import { Plus, Search, FileText, Loader2, Trash2, RefreshCw, Upload } from 'lucide-react'
 import { clsx } from 'clsx'
 
 export function NotesPage() {
@@ -12,6 +12,7 @@ export function NotesPage() {
     const [selectedNote, setSelectedNote] = useState<Note | null>(null)
     const [isLoading, setIsLoading] = useState(false)
     const [isSaving, setIsSaving] = useState(false)
+    const [systemInfo, setSystemInfo] = useState<string>('')
 
     const fetchNotes = async () => {
         setIsLoading(true)
@@ -28,6 +29,31 @@ export function NotesPage() {
     useEffect(() => {
         fetchNotes()
     }, [])
+
+    // listen to refresh trigger from sidebar
+    useEffect(() => {
+        const onRefresh = async () => {
+            setIsLoading(true)
+            try {
+                await fetchNotes()
+                window.dispatchEvent(new CustomEvent('notes:refresh:done', { detail: { ok: true } }))
+            } catch (err: any) {
+                setIsLoading(false)
+                window.dispatchEvent(new CustomEvent('notes:refresh:done', { detail: { ok: false } }))
+            } finally {
+                // Clear the text after a short delay so it behaves like an indicator
+                window.dispatchEvent(new CustomEvent('notes:refresh:done', { detail: { ok: true } }))
+                window.setTimeout(() => {
+                    setIsLoading(false)
+                }, 2000)
+            }
+        }
+
+        window.addEventListener('notes:refresh', onRefresh)
+        return () => {
+            window.removeEventListener('notes:refresh', onRefresh)
+        }
+    }, [fetchNotes])
 
     // Load specific note from URL param (e.g., /note/abc-123)
     useEffect(() => {
@@ -61,6 +87,61 @@ export function NotesPage() {
             version: 0  // Placeholder, backend will generate
         }
         setSelectedNote(newNote)
+    }
+
+    // Opens the OS file picker (system dialog) and returns the selected text file's content.
+    // Restricts selection to text-like files for markdown compatibility.
+    const pickTextFileContent = (): Promise<{ name: string; content: string } | null> => {
+        return new Promise((resolve, reject) => {
+            const input = document.createElement('input')
+            input.type = 'file'
+            input.accept = 'text/plain,text/markdown,.txt,.md,.markdown'
+            input.multiple = false
+
+            input.onchange = async () => {
+                try {
+                    const file = input.files?.[0]
+                    if (!file) {
+                        resolve(null)
+                        return
+                    }
+                    // Read file content as UTF-8 string
+                    const content = await file.text()
+                    resolve({ name: file.name, content })
+                } catch (err) {
+                    reject(err)
+                }
+            }
+
+            // If the user cancels the dialog, `onchange` won't fire; resolve null on blur.
+            // (Best-effort; behavior can vary across platforms.)
+            input.oncancel = () => {
+                resolve(null)
+                setSystemInfo('Upload cancelled.')
+            }
+
+            input.click()
+        })
+    }
+
+    const handleUploadNote = async () => {
+        try {
+            const picked = await pickTextFileContent()
+            if (!picked) return
+            // setSystemInfo(picked.content.slice(0, 300))
+            // create a new note with the uploaded content
+            const newNote: Note = {
+                id: 'new', // Placeholder, backend will generate real ID
+                title: '',
+                content: picked.content,
+                tags: [],
+                version: 0  // Placeholder, backend will generate
+            }
+            setSelectedNote(newNote)
+        } catch (error: any) {
+            const msg = error?.message ?? String(error)
+            setSystemInfo('Failed to upload file: ' + msg)
+        }
     }
 
     const handleSaveNote = async (data: { title: string; content: string; tags: string[] }) => {
@@ -119,18 +200,24 @@ export function NotesPage() {
             <div className="w-80 border-r border-slate-800 bg-slate-900 flex flex-col">
                 <div className="p-4 border-b border-slate-800 space-y-3">
                     <div className="flex items-center justify-between">
-                        <h2 className="font-bold text-lg">My Notes</h2>
+                        {/* <h2 className="font-bold text-lg">My Notes</h2> */}
                         <div className="flex items-center gap-2">
+                            <form onSubmit={handleSearch} className="relative">
+                                <Search className="absolute left-3 top-2.5 text-cyan-500 w-4 h-4" />
+                                <input
+                                    type="text"
+                                    placeholder="Filter notes..."
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    className="w-full bg-slate-800 text-sm pl-9 pr-3 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500/50 placeholder:text-slate-600"
+                                />
+                            </form>
+
                             <button
-                                onClick={fetchNotes}
-                                className="p-1.5 bg-slate-800 text-cyan-400 rounded hover:bg-slate-800/90 transition-colors"
-                                title="Refresh notes"
+                                onClick={handleUploadNote}
+                                className="p-1.5 bg-cyan-600 text-white rounded hover:bg-cyan-500 transition-colors"
                             >
-                                {isLoading ? (
-                                    <Loader2 className="animate-spin text-cyan-500" />
-                                ) : (
-                                    <RefreshCw size={18} />
-                                )}
+                                <Upload size={18} />
                             </button>
                             <button
                                 onClick={handleCreateNote}
@@ -140,16 +227,6 @@ export function NotesPage() {
                             </button>
                         </div>
                     </div>
-                    <form onSubmit={handleSearch} className="relative">
-                        <Search className="absolute left-3 top-2.5 text-cyan-500 w-4 h-4" />
-                        <input
-                            type="text"
-                            placeholder="Filter notes..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full bg-slate-800 text-sm pl-9 pr-3 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500/50 placeholder:text-slate-600"
-                        />
-                    </form>
                     {searchQuery && (
                         <div className="text-[10px] uppercase tracking-wider text-cyan-500 font-bold px-1">
                             {filteredNotes.length} notes found
@@ -225,6 +302,11 @@ export function NotesPage() {
                     <div className="h-full flex flex-col items-center justify-center text-slate-500">
                         <FileText className="w-16 h-16 mb-4 opacity-20" />
                         <p>Select a note or create a new one</p>
+                        {systemInfo && (
+                            <div className="mt-4 w-[min(720px,90%)] p-3 rounded border border-cyan-700/40 bg-slate-900 text-xs text-cyan-300 whitespace-pre-wrap">
+                                {systemInfo}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
