@@ -1,13 +1,12 @@
-import { useRef, useState } from 'react'
-import { ChatInterface } from '../components/ChatInterface'
-import { ChatSession } from '@/components/ChatInterface'
+import { ChatInterface, ChatInterfaceProps } from '../components/ChatInterface'
 
-export function ChatPage() {
-    // chat histories
-    const [historyItems, setHistoryItems] = useState<ChatSession[]>([])
-    const nextSessionIdRef = useRef<number>(1)
-    const [activeChatId, setActiveChatId] = useState<number>(0)
-
+export function ChatPage({
+    historyItems,
+    setHistoryItems,
+    nextSessionIdRef,
+    activeChatId,
+    setActiveChatId,
+}: ChatInterfaceProps) {
     return (
         <div className="h-full w-full flex flex-col overflow-hidden">
             {/* <header className="flex-shrink-0 p-4 border-b border-slate-800 bg-slate-900/50 backdrop-blur">
