@@ -1,173 +1,67 @@
-# HexaNote Voice Assistant
+# HexaNote Assistant
 
-Voice-powered note querying system for your HexaNote server using Qualcomm Whisper ASR.
+Voice-powered intelligence for your personal notes. Powered by Qualcomm Whisper ASR, Ollama, and Weaviate.
 
-## What It Does
+## 🚀 Features
 
-1. **🎤 Record** - Tap to record your question
-2. **🔊 Transcribe** - Whisper converts speech to text  
-3. **📡 Query** - Sends to your HexaNote RAG server
-4. **💬 Respond** - Gets AI-generated answer from your notes
-5. **🔈 Speak** - TTS reads the answer aloud
-6. **📱 Display** - Shows transcript and response on screen
+- **🎤 Voice-First Interface** - Tap to record questions with high-performance on-device transcription.
+- **🧠 RAG Chat** - Context-aware conversations. The AI searches your notes to provide accurate, synthesized answers.
+- **🔍 Semantic Search** - Find notes by meaning and concepts rather than just keyword matching.
+- **🔊 Text-to-Speech** - Listen to responses and note content for a hands-free experience.
+- **✨ Modern UI** - A sleek, "Slate" themed dark interface optimized for clarity and speed.
 
-## Quick Start
+## 🛠️ Architecture
 
-### 1. Configure Server
+```
+[ Mobile App ] <---(REST)---> [ HexaNote Server ]
+      |                             |
+      |-- WhisperKit (NPU)          |-- Ollama (LLM)
+      |-- TTS Engine                |-- Weaviate (Vector DB)
+      |-- Jetpack Compose UI        |-- Semantic Search Logic
+```
 
+## 📋 Prerequisites
+
+- **Android Device**: Optimized for Snapdragon 8 Elite (Galaxy S25) using Qualcomm NPU.
+- **HexaNote Backend**: A running instance of the HexaNote RAG server.
+- **Network**: Connectivity to the backend (via Local IP or Tailscale).
+
+## ⚙️ Configuration
+
+### 1. Backend URL
 Edit `app/src/main/java/com/notesassistant/app/network/HexaNoteRetrofitClient.kt`:
-
 ```kotlin
-private const val BASE_URL = "http://YOUR_SERVER_IP:8000/"
+private const val BASE_URL = "http://YOUR_SERVER_IP:8001/api/v1/"
 ```
 
-- **Emulator**: `http://10.0.2.2:8000/`
-- **Real Device**: `http://192.168.1.XXX:8000/`
+### 2. Authentication
+The app uses token-based authentication. Ensure your backend is configured to accept requests with the appropriate credentials.
 
-### 2. Run
+## 📱 Project Structure
 
-1. Open in Android Studio
-2. Sync Gradle
-3. Run on Samsung Galaxy S25
-4. Grant microphone permission
-5. Tap mic button and ask a question!
+- `MainActivity.kt`: Entry point and permission handling.
+- `ChatScreen.kt`: The main UI supporting RAG Chat and Semantic Search modes.
+- `NotesViewModel.kt`: Core logic for orchestrating ASR, API calls, and UI state.
+- `WhisperKitASR.kt`: On-device speech-to-text integration using Qualcomm WhisperKit.
+- `HexaNoteApiService.kt`: Retrofit definitions for Chat, Search, and Reindexing.
+- `AudioRecorder.kt`: Low-latency audio capture for ASR.
+- `TTSManager.kt`: Android Text-To-Speech integration.
 
-## Current Status
+## 📡 API Capabilities
 
-✅ **Working:**
-- Audio recording
-- TTS playback
-- HexaNote server communication
-- UI with transcript and response display
-- Session management
+The app integrates with several key endpoints:
+- `POST /chat/query`: Submit natural language questions for RAG processing.
+- `GET /notes/search/semantic`: Perform meaning-based searches across your note library.
+- `POST /token`: Handle secure authentication.
+- `POST /notes/reindex`: Trigger backend indexing of new/updated notes.
 
-🔶 **Mock Implementation:**
-- Whisper ASR (returns test transcripts)
+## 🚀 Getting Started
 
-## Integrating Real Whisper
-
-See `INTEGRATION_GUIDE.md` for complete instructions on integrating:
-- WhisperKit (optimized for Snapdragon 8 Elite)
-- WhisperCpp (alternative)
-- Google Cloud Speech-to-Text
-
-## Architecture
-
-```
-User speaks → AudioRecorder → WhisperASR
-                                  ↓
-                           (Transcript)
-                                  ↓
-                         HexaNote /api/v1/chat/query
-                                  ↓
-                           (AI Response)
-                                  ↓
-                    TTSManager + UI Display
-```
-
-## Files
-
-- `MainActivity.kt` - Entry point, permission handling
-- `NotesViewModel.kt` - Orchestrates ASR → Server → TTS flow
-- `HomeScreen.kt` - Voice-focused UI
-- `HexaNoteApiService.kt` - API definitions
-- `WhisperKitASR.kt` - Speech-to-text (template for Whisper integration)
-- `TTSManager.kt` - Text-to-speech
-- `AudioRecorder.kt` - Audio capture
-
-## API Used
-
-**Endpoint:** `POST /api/v1/chat/query`
-
-**Request:**
-```json
-{
-  "message": "What are my notes about ML?",
-  "session_id": "optional-uuid",
-  "limit": 5
-}
-```
-
-**Response:**
-```json
-{
-  "message": "Based on your notes, machine learning...",
-  "session_id": "session-uuid",
-  "created_at": "..."
-}
-```
-
-## Testing
-
-### Without Real Whisper
-
-The app generates mock transcripts based on audio length:
-- Short recording: "What are my notes about machine learning?"
-- Medium: "Can you summarize the key concepts?"
-- Long: "Tell me about neural networks..."
-
-This lets you test the full flow except actual ASR.
-
-### Server Connection Test
-
-```bash
-curl http://YOUR_SERVER:8000/api/v1/health
-```
-
-Should return:
-```json
-{"status": "healthy", "version": "1.0.0"}
-```
-
-## Requirements
-
-- Android 8.0+ (API 26)
-- Microphone permission
-- Network connection to HexaNote server
-- Samsung Galaxy S25 (or any Android device)
-
-## Performance
-
-Optimized for Snapdragon 8 Elite:
-- Efficient coroutine-based async
-- Minimal UI overhead
-- Ready for NPU-accelerated Whisper
-
-## Troubleshooting
-
-**Server connection fails:**
-1. Check server is running
-2. Verify IP address in `BASE_URL`
-3. Check firewall allows port 8000
-4. Ensure same WiFi network (for real device)
-
-**TTS not working:**
-1. Check volume
-2. Verify TTS engine installed
-3. Review Logcat for errors
-
-**Recording fails:**
-1. Grant microphone permission
-2. No other app using mic
-3. Check Logcat for errors
-
-## Next Steps
-
-1. Test with mock Whisper
-2. Verify server communication
-3. Integrate real Whisper (see INTEGRATION_GUIDE.md)
-4. Optimize for your use case
-
-## Documentation
-
-- `INTEGRATION_GUIDE.md` - Complete setup and Whisper integration
-- `API_DOCUMENTATION.md` - (coming soon) Full API reference
-- Inline code comments - Detailed explanations
-
-## License
-
-MIT
+1. Open the project in **Android Studio Ladybug+**.
+2. Sync Gradle dependencies.
+3. Build and run on a compatible Android device.
+4. Grant **Microphone** permissions when prompted.
+5. Start asking questions about your notes!
 
 ---
-
-**Built for Samsung Galaxy S25 with Snapdragon 8 Elite** 🚀
+**Built for the Snapdragon 8 Elite Generation** 🚀
