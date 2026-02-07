@@ -57,11 +57,18 @@ fun ChatScreen(viewModel: NotesViewModel) {
         
         Box(modifier = Modifier.weight(1f)) {
             if (state.mode == ChatMode.RAG) {
-                MessagesList(messages = state.messages, isProcessing = state.isProcessing)
+                MessagesList(
+                    messages = state.messages, 
+                    isProcessing = state.isProcessing,
+                    isSpeaking = state.isSpeaking,
+                    onSpeak = { viewModel.speakText(it) },
+                    onStopSpeaking = { viewModel.stopSpeaking() }
+                )
             } else {
                 SearchResultsList(
                     results = state.searchResults, 
                     isProcessing = state.isProcessing,
+                    isTranscribing = state.isTranscribing,
                     query = state.searchQuery,
                     onNoteClick = { viewModel.selectNote(it) }
                 )
@@ -232,7 +239,13 @@ fun TabItem(
 }
 
 @Composable
-fun MessagesList(messages: List<ChatMessage>, isProcessing: Boolean) {
+fun MessagesList(
+    messages: List<ChatMessage>, 
+    isProcessing: Boolean,
+    isSpeaking: Boolean,
+    onSpeak: (String) -> Unit,
+    onStopSpeaking: () -> Unit
+) {
     val listState = rememberLazyListState()
     
     LaunchedEffect(messages.size) {
@@ -255,7 +268,12 @@ fun MessagesList(messages: List<ChatMessage>, isProcessing: Boolean) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             items(messages) { message ->
-                MessageBubble(message)
+                MessageBubble(
+                    message = message,
+                    onSpeak = { onSpeak(message.content) },
+                    onStopSpeaking = onStopSpeaking,
+                    isSpeaking = isSpeaking
+                )
             }
             if (isProcessing) {
                 item {
@@ -267,12 +285,18 @@ fun MessagesList(messages: List<ChatMessage>, isProcessing: Boolean) {
 }
 
 @Composable
-fun MessageBubble(message: ChatMessage) {
+fun MessageBubble(
+    message: ChatMessage,
+    onSpeak: () -> Unit,
+    onStopSpeaking: () -> Unit,
+    isSpeaking: Boolean
+) {
     val isUser = message.role == "user"
     
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom
     ) {
         if (!isUser) {
             AppAvatar()
@@ -291,6 +315,26 @@ fun MessageBubble(message: ChatMessage) {
                     color = if (isUser) Cyan100 else Slate100,
                     style = MaterialTheme.typography.bodyMedium
                 )
+                
+                if (!isUser) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        IconButton(
+                            onClick = { if (isSpeaking) onStopSpeaking() else onSpeak() },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isSpeaking) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                                contentDescription = "TTS",
+                                tint = if (isSpeaking) Cyan400 else Slate400,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
         
@@ -339,10 +383,11 @@ fun border(color: Color) = BorderStroke(1.dp, color)
 fun SearchResultsList(
     results: List<SemanticSearchResult>, 
     isProcessing: Boolean,
+    isTranscribing: Boolean,
     query: String,
     onNoteClick: (SemanticSearchResult) -> Unit
 ) {
-    if (results.isEmpty() && !isProcessing) {
+    if (results.isEmpty() && !isProcessing && !isTranscribing) {
         EmptyState(
             icon = painterResource(id = R.drawable.icon),
             title = "Search for notes semantically...",
@@ -354,7 +399,13 @@ fun SearchResultsList(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (query.isNotEmpty()) {
+            if (isTranscribing) {
+                item {
+                    TranscriptionIndicator()
+                }
+            }
+            
+            if (query.isNotEmpty() && !isTranscribing) {
                 item {
                     Surface(
                         color = Purple900.copy(alpha = 0.2f),
@@ -382,16 +433,24 @@ fun SearchResultsList(
                 }
             }
             
-            item {
-                Text(
-                    "${results.size} RESULTS FOUND", 
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Purple400,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            items(results) { result ->
-                SearchResultItem(result, onClick = { onNoteClick(result) })
+            if (results.isNotEmpty()) {
+                item {
+                    Text(
+                        "${results.size} RESULTS FOUND", 
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Purple400,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                items(results) { result ->
+                    SearchResultItem(result, onClick = { onNoteClick(result) })
+                }
+            } else if (isProcessing && !isTranscribing) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = Purple400)
+                    }
+                }
             }
         }
     }
@@ -599,6 +658,29 @@ fun TypingIndicator() {
                 color = Purple400
             )
         }
+    }
+}
+
+@Composable
+fun TranscriptionIndicator() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(20.dp),
+            strokeWidth = 2.dp,
+            color = Purple400
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(
+            "Transcribing speech...",
+            color = Slate400,
+            style = MaterialTheme.typography.bodyMedium
+        )
     }
 }
 

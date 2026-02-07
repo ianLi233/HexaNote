@@ -142,7 +142,10 @@ class NotesViewModel : ViewModel() {
     }
 
     fun setMode(mode: ChatMode) {
-        _state.value = _state.value.copy(mode = mode)
+        if (_state.value.mode != mode) {
+            stopSpeaking()
+            _state.value = _state.value.copy(mode = mode)
+        }
     }
 
     fun selectNote(note: SemanticSearchResult?) {
