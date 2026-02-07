@@ -9,6 +9,16 @@ import { clsx } from 'clsx'
 
 type ChatMode = 'rag' | 'semantic'
 
+type ChatSession = {
+    id: number
+    sessionId: string
+    title: string
+    createdAt: number
+    updatedAt: number
+    mode: 'rag' | 'semantic'
+    messages: Message[]
+}
+
 interface Message {
     role: 'user' | 'assistant' | 'system'
     content: string
@@ -22,18 +32,44 @@ export function ChatInterface() {
     const [searchResults, setSearchResults] = useState<SemanticSearchResult[]>([])
     const [input, setInput] = useState('')
     const [isLoading, setIsLoading] = useState(false)
-    const [sessionId, setSessionId] = useState<string | null>(null)
     const [isReindexing, setIsReindexing] = useState(false)
     const [reindexMessage, setReindexMessage] = useState<string | null>(null)
     const [loadedNoteContext, setLoadedNoteContext] = useState<{ noteId: string; title: string } | null>(null)
     const messagesEndRef = useRef<HTMLDivElement>(null)
 
     // chat histories
-    // Placeholder chat history list (UI only)
-    const [historyItems] = useState<Array<{ id: string; title: string }>>([
-        { id: 'current', title: 'Current session' },
-    ])
-    const [activeHistoryId, setActiveHistoryId] = useState<string>('current')
+    const [historyItems, setHistoryItems] = useState<ChatSession[]>([])
+    const nextSessionIdRef = useRef<number>(1)
+    const [activeChatId, setActiveChatId] = useState<number>(0)
+
+    const createChatSession = async (title?: string) => {
+        const id = nextSessionIdRef.current++
+        const now = Date.now()
+
+        /// request a server-assigned session id for this chat
+        let createdSessionId = ''
+        try {
+            createdSessionId = await ChatService.createSession()
+        } catch {
+            // If session creation fails, still create local chat
+            createdSessionId = `local-${id}`
+        }
+
+        const newSession: ChatSession = {
+            id,
+            sessionId: createdSessionId,
+            title: title ?? `New Chat ${id + 1}`,
+            createdAt: now,
+            updatedAt: now,
+            mode,
+            messages: [],
+        }
+
+        setHistoryItems(prev => [newSession, ...prev])
+        setActiveChatId(id)
+
+        return newSession
+    }
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -55,7 +91,6 @@ export function ChatInterface() {
         // Clear state when switching modes
         setMessages([])
         setSearchResults([])
-        setSessionId(null)
         setInput('')
     }
 
@@ -86,8 +121,17 @@ export function ChatInterface() {
 
     const handleSend = async () => {
         if (!input.trim() || isLoading) return
-
         setIsLoading(true)
+
+        // retrieve active chat session or create a new one if none exists
+        let ensuredSessionId: string | null = null
+        if (activeChatId === 0) {
+            const newSession = await createChatSession(input.trim())
+            ensuredSessionId = newSession.sessionId
+        } else {
+            const existingSession = historyItems.find((s) => s.id === activeChatId)
+            ensuredSessionId = existingSession?.sessionId ?? null
+        }
 
         if (mode === 'rag') {
             // RAG mode: use LLM with context
@@ -114,18 +158,8 @@ export function ChatInterface() {
                 }
             }
 
-            setInput('')
-            if (loadedNoteContext) {
-                setLoadedNoteContext(null) // Clear after use
-            }
-
             try {
-                const response = await ChatService.query(input, sessionId, additionalContext)
-
-                if (!sessionId && response.session_id) {
-                    setSessionId(response.session_id)
-                }
-
+                const response = await ChatService.query(input, ensuredSessionId, additionalContext)
                 const botMessage: Message = {
                     role: 'assistant',
                     content: response.message,
@@ -136,6 +170,12 @@ export function ChatInterface() {
                 console.error('Chat error:', error)
                 setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I encountered an error retrieving the answer.' }])
             }
+
+            setInput('')
+            if (loadedNoteContext) {
+                setLoadedNoteContext(null) // Clear after use
+            }
+
         } else {
             // Semantic mode: just search, no LLM
             const query = input
@@ -179,7 +219,7 @@ export function ChatInterface() {
     }
 
     return (
-        <div className="flex h-full w-full overflow-hidden bg-slate-900">
+        <div className="flex flex-1 min-h-0 w-full overflow-hidden bg-slate-900">
             {/* History Sidebar (placeholder) */}
             <div className="w-72 flex-shrink-0 border-r border-slate-800 bg-slate-900/60 flex flex-col min-h-0">
                 <div className="p-3 border-b border-slate-800">
@@ -192,10 +232,10 @@ export function ChatInterface() {
                 {historyItems.map((h) => (
                     <button
                     key={h.id}
-                    onClick={() => setActiveHistoryId(h.id)}
+                    onClick={() => setActiveChatId(h.id)}
                     className={clsx(
                         "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
-                        activeHistoryId === h.id
+                        activeChatId === h.id
                         ? "bg-slate-800 text-slate-100"
                         : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
                     )}

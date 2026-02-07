@@ -103,7 +103,12 @@ export const NoteService = {
 }
 
 export const ChatService = {
-    query: async (message: string, sessionId?: string | null, additionalContext?: string) => {
+    createSession: async () => {
+        const response = await api.post<{ session_id: string }>('/chat/sessions')
+        return response.data.session_id
+    },
+
+    query: async (message: string, sessionId: string | null, additionalContext?: string) => {
         const payload: any = {
             message,
             limit: 5
