@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChatService, NoteService, ContextNote, SemanticSearchResult } from '../services/api'
+import { ChatService, NoteService, ContextNote, SemanticSearchResult, Message } from '../services/api'
 import { Send, Bot, User, Loader2, Search, MessageSquare, FileText, RefreshCw, CheckCircle, Plus } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
@@ -17,12 +17,8 @@ type ChatSession = {
     updatedAt: number
     mode: 'rag' | 'semantic'
     messages: Message[]
-}
-
-interface Message {
-    role: 'user' | 'assistant' | 'system'
-    content: string
-    sources?: ContextNote[]
+    isHistoryLoading: boolean
+    isHistoryLoaded: boolean
 }
 
 export function ChatInterface() {
@@ -39,7 +35,7 @@ export function ChatInterface() {
 
     // chat histories
     const [historyItems, setHistoryItems] = useState<ChatSession[]>([])
-    const nextSessionIdRef = useRef<number>(0)
+    const nextSessionIdRef = useRef<number>(1)
     const [activeChatId, setActiveChatId] = useState<number>(0)
 
     // Tiny debug overlay (mini console)
@@ -61,11 +57,13 @@ export function ChatInterface() {
             id,
             // placeholder until we fetch server session id
             sessionId: `pending-${id}`,
-            title: title ?? `New Chat ${id + 1}`,
+            title: title ?? `New Chat ${id}`,
             createdAt: now,
             updatedAt: now,
             mode,
             messages: [],
+            isHistoryLoading: false,
+            isHistoryLoaded: false
         }
 
         setHistoryItems(prev => [newSession, ...prev])
@@ -133,6 +131,61 @@ export function ChatInterface() {
         setMessages([])
         setSearchResults([])
         setInput('')
+    }
+
+    const updateChatSession = (chatId: number, patch: Partial<ChatSession>) => {
+        setHistoryItems(prev => prev.map(s => (s.id === chatId ? { ...s, ...patch } : s)))
+    }
+
+    const normalizeRole = (role: string): Message['role'] => {
+        if (role === 'user' || role === 'assistant' || role === 'system') return role
+        return 'assistant'
+    }
+
+    const handleSelectChat = async (chatId: number) => {
+        setActiveChatId(chatId)
+        setSearchResults([])
+        setLoadedNoteContext(null)
+        setInput('')
+
+        // Show cached messages immediately if we have them
+        const cached = historyItems.find(s => s.id === chatId)
+        if (cached?.messages && cached.messages.length > 0) {
+            setMessages(cached.messages)
+        } else {
+            setMessages([])
+        }
+
+        updateChatSession(chatId, { isHistoryLoading: true })
+        setIsLoading(true)
+
+        try {
+            const sid = await ensureServerSessionId(chatId)
+            pushDebug(`Loading history for chat ${chatId} (${sid})…`)
+
+            const hist = await ChatService.getHistory(sid)
+            pushDebug(`History loaded for chat ${chatId}: ${hist}`)
+            const mapped: Message[] = (hist.messages || []).map(m => ({
+                role: normalizeRole(m.role),
+                content: m.content,
+            }))
+
+            // Cache into the session and update the visible transcript
+            updateChatSession(chatId, {
+                sessionId: hist.session_id || sid,
+                messages: mapped,
+                isHistoryLoaded: true,
+                isHistoryLoading: false,
+                updatedAt: Date.now(),
+            })
+            setMessages(mapped)
+            pushDebug(`Loaded ${mapped.length} messages for chat ${chatId}`)
+        } catch (e) {
+            updateChatSession(chatId, { isHistoryLoading: false })
+            pushDebug(`History load error: ${e instanceof Error ? e.message : String(e)}`)
+        } finally {
+            setIsLoading(false)
+        }
     }
 
     const handleReindex = async (notFake: boolean = true) => {
@@ -289,14 +342,14 @@ export function ChatInterface() {
                 <div className="p-2 overflow-y-auto flex-1 min-h-0">
                 {historyItems.map((h) => (
                     <button
-                    key={h.id}
-                    onClick={() => setActiveChatId(h.id)}
-                    className={clsx(
-                        "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
-                        activeChatId === h.id
-                        ? "bg-slate-800 text-slate-100"
-                        : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-                    )}
+                        key={h.id}
+                        onClick={() => handleSelectChat(h.id)}
+                        className={clsx(
+                            "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
+                            activeChatId === h.id
+                            ? "bg-slate-800 text-slate-100"
+                            : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+                        )}
                     >
                     <div className="truncate">{h.title}</div>
                     </button>
