@@ -216,5 +216,4 @@ private const val BASE_URL = "http://YOUR_SERVER_IP:8001/api/v1/"
 ---
 
 ## License
-
-This project is for educational and personal use.
+MIT License
